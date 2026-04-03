@@ -1,0 +1,27 @@
+{
+  "config": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "bitrate": "8M",
+    "transition_duration": 0.5
+  },
+  "entries": [
+    {
+      "rank": 1,
+      "song_id": "12345",
+      "title": "Test Song One",
+      "title_jp": "テストソング",
+      "game": "Test Game",
+      "artist": "Vocals: Test Singer\nMusic: Test Composer",
+      "song_type": 1,
+      "duration": 5,
+      "start_time": 0,
+      "local_file": null,
+      "audio_url": null,
+      "video_url": null,
+      "vndb_id": "v12345",
+      "is_video": false
+    }
+  ]
+}

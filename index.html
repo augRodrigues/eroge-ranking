@@ -634,22 +634,20 @@ function exportForPythonEncoder(){
     
     return {
       rank: i + 1,
-      song: {
-        id: String(song.id),
-        t: song.t || '',
-        tj: song.tj || '',
-        gt: song.gt || '',
-        st: song.st || 0,
-        au: videoFile ? null : audioUrl,  // Don't include au for video files
-        vid: song.vid || null,
-        artists: artistStr
-      },
+      song_id: String(song.id),
+      title: song.t || '',
+      title_jp: song.tj || '',
+      game: song.gt || '',
+      artist: artistStr,
+      song_type: song.st || 0,
       duration: r.duration,
-      startTime: r.startTime,
+      start_time: r.startTime,
       // For local files, just use the filename - encoder will look in same directory
-      localFile: localFileName,
-      videoFile: videoFile,  // New field for video files (webm, mp4, etc.)
-      coverFile: null // Cover is fetched from VNDB by encoder
+      local_file: localFileName,
+      audio_url: videoFile ? null : audioUrl,  // Don't include au for video files
+      video_url: videoFile,  // New field for video files (webm, mp4, etc.)
+      vndb_id: song.vid || null,
+      is_video: !!videoFile  // Flag to indicate this is a video file
     };
   });
   

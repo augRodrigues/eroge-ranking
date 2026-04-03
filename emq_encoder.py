@@ -283,19 +283,90 @@ class VideoEncoder:
         def is_url(path):
             return path.startswith(('http://', 'https://', 'ftp://'))
         
-        # Try local video file first (from local_file field)
+        # Determine video source
+        video_path = None
+        
+        # Try local_file field first
         if entry.local_file:
             local_path = entry.local_file
             if not os.path.exists(local_path):
-                local_path = os.path.join(os.getcwd(), entry.local_file)
+                local_path = os.path.join(os.getcwd(), os.path.basename(local_path))
             
             if os.path.exists(local_path):
+                video_path = os.path.abspath(local_path)
+        
+        # Try video_url field if local_file didn't work
+        if not video_path and entry.video_url:
+            if not is_url(entry.video_url):
+                vp = entry.video_url
+                if not os.path.exists(vp):
+                    vp = os.path.join(os.getcwd(), os.path.basename(vp))
+                
+                if os.path.exists(vp):
+                    video_path = os.path.abspath(vp)
+        
+        if video_path:
+            try:
+                self.log(f"Processing local video: {video_path}", "INFO")
+                
+                # Get video dimensions
+                probe_cmd = [
+                    'ffprobe', '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=width,height',
+                    '-of', 'csv=p=0:s=x',
+                    video_path
+                ]
+                result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0 and 'x' in result.stdout:
+                    vid_width, vid_height = map(int, result.stdout.strip().split('x'))
+                else:
+                    vid_width, vid_height = 640, 480
+                
+                # Layout: Video covers 75% width, 70% height, top-left position
+                video_area_width = int(self.project.config.width * 0.75)
+                video_area_height = int(self.project.config.height * 0.70)
+                video_x = 10
+                video_y = 10
+                
+                # Scale video to fit within video area while maintaining aspect ratio
+                # Use scale2ref for proper fitting
+                filter_complex = (
+                    f"[0:v]scale=min({video_area_width}\\,iw*{video_area_height}/ih):min({video_area_height}\\,ih*{video_area_width}/iw)[scaled];"
+                    f"[scaled]pad={self.project.config.width}:{self.project.config.height}:{video_x}:{video_y}:black[bg]"
+                )
+                
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', video_path,
+                    '-ss', str(entry.start_time),
+                    '-t', str(entry.duration),
+                    '-filter_complex', filter_complex,
+                    '-c:v', self.project.config.codec,
+                    '-preset', 'ultrafast',
+                    '-crf', str(self.project.config.crf),
+                    '-pix_fmt', self.project.config.pixel_format,
+                    '-r', str(self.project.config.fps),
+                    output_path
+                ]
+                
+                subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+                return output_path
+            except subprocess.CalledProcessError as e:
+                self.log(f"Failed to process local video: {e}", "ERROR")
+                if self.verbose and e.stderr:
+                    self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
+            except Exception as e:
+                self.log(f"Error processing video: {e}", "ERROR")
+        
+        # Try downloading from URL as fallback
+        if entry.video_url and is_url(entry.video_url):
+            downloaded = os.path.join(self.temp_dir, f"downloaded_video_{index:04d}.tmp")
+            if self.download_file(entry.video_url, downloaded):
                 try:
-                    # Use absolute path to ensure FFmpeg treats it as a local file
-                    local_path = os.path.abspath(local_path)
                     cmd = [
                         "ffmpeg", "-y",
-                        "-i", local_path,
+                        "-i", downloaded,
                         "-ss", str(entry.start_time),
                         "-t", str(entry.duration),
                         "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=decrease,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
@@ -306,72 +377,10 @@ class VideoEncoder:
                         "-r", str(self.project.config.fps),
                         output_path
                     ]
-                    if self.verbose:
-                        self.log(f"Processing local video: {local_path}")
                     subprocess.run(cmd, capture_output=True, check=True)
                     return output_path
                 except subprocess.CalledProcessError as e:
-                    self.log(f"Failed to process local video: {e}", "ERROR")
-                    if self.verbose and e.stderr:
-                        self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
-        
-        # Try video_url field (may contain local path or URL)
-        if entry.video_url:
-            # First check if it's a URL
-            if is_url(entry.video_url):
-                # It's a URL, try to download
-                downloaded = os.path.join(self.temp_dir, f"downloaded_video_{index:04d}.tmp")
-                if self.download_file(entry.video_url, downloaded):
-                    try:
-                        cmd = [
-                            "ffmpeg", "-y",
-                            "-i", downloaded,
-                            "-ss", str(entry.start_time),
-                            "-t", str(entry.duration),
-                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=decrease,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
-                            "-c:v", self.project.config.codec,
-                            "-preset", "ultrafast",
-                            "-crf", str(self.project.config.crf),
-                            "-pix_fmt", self.project.config.pixel_format,
-                            "-r", str(self.project.config.fps),
-                            output_path
-                        ]
-                        subprocess.run(cmd, capture_output=True, check=True)
-                        return output_path
-                    except subprocess.CalledProcessError as e:
-                        self.log(f"Failed to process downloaded video: {e}", "ERROR")
-            else:
-                # It's a local file path
-                video_path = entry.video_url
-                if not os.path.exists(video_path):
-                    video_path = os.path.join(os.getcwd(), entry.video_url)
-                
-                if os.path.exists(video_path):
-                    try:
-                        video_path = os.path.abspath(video_path)
-                        cmd = [
-                            "ffmpeg", "-y",
-                            "-i", video_path,
-                            "-ss", str(entry.start_time),
-                            "-t", str(entry.duration),
-                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=decrease,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
-                            "-c:v", self.project.config.codec,
-                            "-preset", "ultrafast",
-                            "-crf", str(self.project.config.crf),
-                            "-pix_fmt", self.project.config.pixel_format,
-                            "-r", str(self.project.config.fps),
-                            output_path
-                        ]
-                        if self.verbose:
-                            self.log(f"Processing video from video_url: {video_path}")
-                        subprocess.run(cmd, capture_output=True, check=True)
-                        return output_path
-                    except subprocess.CalledProcessError as e:
-                        self.log(f"Failed to process video from video_url: {e}", "ERROR")
-                        if self.verbose and e.stderr:
-                            self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
-                else:
-                    self.log(f"Video file not found: {entry.video_url}", "WARN")
+                    self.log(f"Failed to process downloaded video: {e}", "ERROR")
         
         return None
     
@@ -387,49 +396,87 @@ class VideoEncoder:
         def escape_text(text):
             if not text:
                 return ""
-            return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+            return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%").replace(",", "\\,").replace("\n", "\\n")
+        
+        # Layout configuration
+        config = self.project.config
+        video_area_width = int(config.width * 0.75)
+        video_area_height = int(config.height * 0.70)
+        video_x = 10
+        video_y = 10
+        
+        # Right panel: 25% width, full height minus bottom bar
+        right_panel_width = config.width - video_area_width - 20
+        right_panel_x = video_area_width + video_x + 10
+        
+        # Bottom bar: full width, 15% height
+        bottom_bar_height = int(config.height * 0.15)
+        bottom_bar_y = config.height - bottom_bar_height - 10
         
         # Build filter complex for overlays
         filters = []
         
-        # Rank number overlay
+        # 1. Draw right panel background (dark semi-transparent)
+        filters.append(
+            f"drawbox=x={right_panel_x}:y={video_y}:w={right_panel_width}:h={video_area_height}:color=black@0.85:t=fill"
+        )
+        
+        # 2. Rank number in top-right of panel
         rank_text = escape_text(f"#{entry.rank}")
+        rank_y = video_y + 60
         filters.append(
-            f"drawtext=text='{rank_text}':fontsize=72:fontcolor={type_color}:"
-            f"x=50:y=h-100"
+            f"drawtext=text='{rank_text}':fontsize=64:fontcolor={type_color}:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+            f"x={right_panel_x + right_panel_width//2 - 30}:y={rank_y}"
         )
         
-        # Type badge
-        badge_x = self.project.config.width // 8
-        badge_y = self.project.config.height // 8
+        # 3. Type badge below rank
+        badge_y = rank_y + 70
         filters.append(
-            f"drawtext=text='{type_label}':fontsize=28:fontcolor={type_color}:"
-            f"x={badge_x}:y={badge_y}"
+            f"drawtext=text='{type_label}':fontsize=24:fontcolor={type_color}:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+            f"x={right_panel_x + right_panel_width//2 - 40}:y={badge_y}"
         )
         
-        # Song title
-        title_y = badge_y + 60
-        escaped_title = escape_text(entry.title)
+        # 4. Game title below badge (wrapped text would need more complex handling)
+        game_y = badge_y + 45
+        escaped_game = escape_text(entry.game[:40])  # Truncate long titles
         filters.append(
-            f"drawtext=text='{escaped_title}':"
-            f"fontsize=48:fontcolor=white:x={badge_x}:y={title_y}"
+            f"drawtext=text='{escaped_game}':fontsize=18:fontcolor=#cccccc:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+            f"x={right_panel_x + 15}:y={game_y}"
         )
         
-        # Japanese title if available
-        if entry.title_jp:
-            jp_y = title_y + 55
-            escaped_jp = escape_text(entry.title_jp)
-            filters.append(
-                f"drawtext=text='{escaped_jp}':"
-                f"fontsize=28:fontcolor=#aaaaaa:x={badge_x}:y={jp_y}"
-            )
-            
-        # Game and artist info
-        info_y = jp_y + 45 if entry.title_jp else title_y + 45
-        info_text = escape_text(f"{entry.game} · {entry.artist}")
+        # 5. Draw bottom bar background
         filters.append(
-            f"drawtext=text='{info_text}':"
-            f"fontsize=22:fontcolor=#888888:x={badge_x}:y={info_y}"
+            f"drawbox=x={video_x}:y={bottom_bar_y}:w={config.width - 20}:h={bottom_bar_height}:color=black@0.9:t=fill"
+        )
+        
+        # 6. Song title in bottom bar (left side, below video area)
+        title_y = bottom_bar_y + 35
+        escaped_title = escape_text(entry.title[:60])  # Truncate long titles
+        filters.append(
+            f"drawtext=text='{escaped_title}':fontsize=28:fontcolor=white:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+            f"x={video_x + 15}:y={title_y}"
+        )
+        
+        # 7. Credits (artist/composer/etc) below title
+        credits_y = title_y + 35
+        # Parse artist string to show Vocals, Music, etc.
+        credits_text = entry.artist
+        if 'Vocals:' in credits_text or 'Music:' in credits_text:
+            parts = credits_text.split('\n')
+            credits_display = ' | '.join([p.strip() for p in parts if p.strip()])[:80]
+        else:
+            credits_display = credits_text[:80]
+        escaped_credits = escape_text(credits_display)
+        filters.append(
+            f"drawtext=text='{escaped_credits}':fontsize=18:fontcolor=#aaaaaa:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+            f"x={video_x + 15}:y={credits_y}"
+        )
+        
+        # 8. Sample timer placeholder in bottom-left corner
+        timer_y = bottom_bar_y + bottom_bar_height - 30
+        filters.append(
+            f"drawtext=text='':fontsize=16:fontcolor=#888888:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
+            f"x={video_x + 15}:y={timer_y}"
         )
         
         filter_str = ",".join(filters)
@@ -731,42 +778,69 @@ def load_ranking_json(json_path: str) -> EncodingProject:
     
     entries_data = data.get("entries", [])
     for i, entry in enumerate(entries_data):
-        song = entry.get("song", {})
+        # Support both old format (nested song object) and new format (flat structure)
+        if "song" in entry:
+            # Old format
+            song = entry.get("song", {})
+            rank = entry.get("rank", i + 1)
+            duration = entry.get("duration", 15.0)
+            start_time = entry.get("startTime", 0.0)
+            local_file = entry.get("localFile")
+            video_url = entry.get("videoFile")
+            cover_file = entry.get("coverFile")
+        else:
+            # New flat format
+            rank = entry.get("rank", i + 1)
+            duration = entry.get("duration", 15.0)
+            start_time = entry.get("start_time", 0.0)
+            local_file = entry.get("local_file")
+            video_url = entry.get("video_url")
+            cover_file = entry.get("cover_file")
+            song = {
+                "id": entry.get("song_id", ""),
+                "t": entry.get("title", "Unknown"),
+                "tj": entry.get("title_jp", ""),
+                "gt": entry.get("game", ""),
+                "st": entry.get("song_type", 0),
+                "au": entry.get("audio_url"),
+                "vid": entry.get("vndb_id"),
+                "artists": entry.get("artist", "")
+            }
         
         # Determine if this is a video file based on extension
-        is_video = False
-        local_file = entry.get("localFile")
+        is_video = entry.get("is_video", False)
         audio_url = song.get("au")
-        video_url = entry.get("videoFile")  # New field for video files
         
-        # Check local file extension
-        if local_file:
-            ext = local_file.split('.')[-1].lower() if '.' in local_file else ''
-            is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
-        # Check videoFile extension
-        elif video_url:
-            ext = video_url.split('?')[0].split('.')[-1].lower()
-            is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
-        # Check URL extension
-        elif audio_url:
-            ext = audio_url.split('?')[0].split('.')[-1].lower()
-            is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
+        # Auto-detect video if not explicitly set
+        if not is_video:
+            # Check local file extension
+            if local_file:
+                ext = local_file.split('.')[-1].lower() if '.' in local_file else ''
+                is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
+            # Check videoFile extension
+            elif video_url:
+                ext = video_url.split('?')[0].split('.')[-1].lower()
+                is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
+            # Check URL extension
+            elif audio_url:
+                ext = audio_url.split('?')[0].split('.')[-1].lower()
+                is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
         
         song_entry = SongEntry(
-            rank=entry.get("rank", i + 1),
+            rank=rank,
             song_id=song.get("id", ""),
             title=song.get("t", "Unknown"),
             title_jp=song.get("tj", ""),
             game=song.get("gt", ""),
             artist=song.get("artists", ""),
             song_type=song.get("st", 0),
-            duration=entry.get("duration", 15.0),
-            start_time=entry.get("startTime", 0.0),
-            local_file=local_file if is_video else local_file,  # Keep local_file for video files
-            audio_url=audio_url if not is_video else None,  # Don't use audio_url for video files
-            video_url=video_url or (local_file if is_video else None) or (audio_url if is_video else None),  # Use videoFile first, then local_file for video files, fallback to audio_url
+            duration=duration,
+            start_time=start_time,
+            local_file=local_file if is_video else local_file,
+            audio_url=audio_url if not is_video else None,
+            video_url=video_url or (local_file if is_video else None) or (audio_url if is_video else None),
             vndb_id=song.get("vid"),
-            cover_file=entry.get("coverFile"),
+            cover_file=cover_file,
             is_video=is_video,
         )
         project.entries.append(song_entry)
