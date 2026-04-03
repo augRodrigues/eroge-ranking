@@ -40,10 +40,12 @@ In your repo → Settings → Pages → deploy from `main` / root.
 1. Open the site — it fetches `db.json` automatically.  
    If running locally without a server, open the page and pick `db.json` via the file picker.
 2. Search for songs by title, game, or artist → click to add
-3. Paste an EMQ link (e.g. `https://erogemusicquiz.com/music/12345`) with the **+ URL** button
+3. Paste a direct media URL (e.g. `https://erogemusicquiz.com/selfhoststorage/xxx.webm`) with the **+ URL** button; auto-detects video vs audio from file extension
 4. Reorder by dragging cards or using ↑↓ buttons
 5. Set clip length and start offset per song, or use **Apply to all**
 6. Click **▶ Generate video** — configure resolution/FPS, then encode
+
+**Note:** Be logged into erogemusicquiz.com before encoding so the browser can fetch protected media files using your session cookie.
 
 ---
 
@@ -76,18 +78,19 @@ In your repo → Settings → Pages → deploy from `main` / root.
 ┌──────────────────────────────────────────────────────────────┐
 │  [blurred game cover background]                             │
 │                                                              │
-│  ┌──────────────┐  OPENING                                  │
-│  │              │                                           │
-│  │  Game cover  │  Song Title                               │
-│  │  art panel   │  Japanese Title                           │
-│  │              │                                           │
-│  │              │  Game Name                                │
-│  │              │                                           │
-│  │  #42         │  Vocals:      Artist Name                 │
-│  └──────────────┘  Lyrics:      Lyricist Name               │
-│                    Music:       Composer Name               │
-│                                                             │
-│ ███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0:18      │
+│  ┌──────────────┐  OPENING                                   │
+│  │              │                                            │
+│  │  Game cover  │   Song Title                               │
+│  │  art panel   │   Japanese Title                           │
+│  │              │                                            │
+│  │              │   Game Name                                │
+│  │              │                                            │
+│  │  #42         │   Vocals:     Artist Name                  │
+│  └──────────────┘   Composer:   Composer Name                │
+│                     Arranger:   Arranger Name                │
+│                     Lyrics:     Lyricist Name                │
+│                                                              │
+│ ███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0:18       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -100,13 +103,19 @@ In your repo → Settings → Pages → deploy from `main` / root.
 │ 20%  │                   VIDEO (80%)                         │
 │panel │          pillarboxed for 4:3 content                  │
 │      │                                                       │
-│ #42  │                                                       │
+│      │  Song Title                                           │
+│      │  Japanese Title                                       │
+│      │  Game Name                                            │
+│      │  Vocals:     Artist Name                              │
+│ #42  │  Composer:   Composer Name                            │
+│      │  Arranger:   Arranger Name                            │
+│      │  Lyrics:     Lyricist Name                            │
 │      │                                                       │
 │███████████████████████████████████████████████████  0:18     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Video content fills 80% of the screen width, with metadata displayed in a 20% left panel. 4:3 videos automatically get black pillarbars on the sides.
+Video content fills 80% of the screen width, with metadata displayed in a 20% left panel. 4:3 videos automatically get black pillarbars on the sides. The info panel shows song title, game name, and all credited artists (vocals, composer, arranger, lyricist, etc.).
 
 ### Audio
 

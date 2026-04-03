@@ -415,8 +415,8 @@ main{flex:1;display:flex;flex-direction:column;max-width:1400px;
 // ─────────────────────────────────────────────────────────────
 //  CONSTANTS
 // ─────────────────────────────────────────────────────────────
-const TYPE_LABEL = {1:'Opening',2:'Ending',3:'Insert Song',4:'BGM',0:'Unknown'};
-const TYPE_COLOR = {1:'#e8c547',2:'#3ecfac',3:'#6ba4f5',4:'#a48ef8',0:'#7a7a98'};
+const TYPE_LABEL = {1:'Opening',2:'Ending',3:'Insert Song',4:'BGM',600:'Theme Song',0:'Unknown'};
+const TYPE_COLOR = {1:'#e8c547',2:'#3ecfac',3:'#6ba4f5',4:'#a48ef8',600:'#ff8a8a',0:'#7a7a98'};
 const ROLE_LABEL = {1:'Vocals',2:'Music',3:'Performer',4:'Director',5:'Arrangement',6:'Lyrics'};
 const ROLE_ORDER = [1,6,2,5,3,4];
 
@@ -712,7 +712,7 @@ function renderRanking(){
 // ─────────────────────────────────────────────────────────────
 const coverCache=new Map();
 
-// Extract numeric ID from VNDB vid field (e.g., "v87" -> 87)
+// Extract numeric ID from VNDB vid field (e.g., "v87" -> 87 or "14910" -> 14910)
 function extractVndbId(vid){
   if(!vid) return null;
   const m = vid.match(/^v?(\d+)$/i);
@@ -724,6 +724,7 @@ async function getCover(vndbId){
   if(!id) return null;
   if(coverCache.has(id)) return coverCache.get(id);
   try{
+    // Use proper VNDB API format with filters as array
     const res=await fetch('https://api.vndb.org/kana/vn',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({filters:['id','=',id],fields:'image.url,image.sexual'})
@@ -733,7 +734,11 @@ async function getCover(vndbId){
     const url=d.results?.[0]?.image?.url;
     const img=url?await loadImage(url):null;
     coverCache.set(id,img); return img;
-  }catch(e){ coverCache.set(id,null); return null; }
+  }catch(e){ 
+    console.error('VNDB API error:', e);
+    coverCache.set(id,null); 
+    return null; 
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -853,7 +858,7 @@ async function generateVideo(){
     // For video files, play the video on canvas with pillarboxing for 4:3
     if(mediaType === 'video'){
       const videoSrc = localFile ? URL.createObjectURL(localFile) : song.au;
-      await animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoSrc);
+      await animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoSrc,startTime);
       if(localFile) URL.revokeObjectURL(videoSrc);
     } else {
       await animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTime);
@@ -863,16 +868,19 @@ async function generateVideo(){
     // Half-second fade out/in transition between songs (except last)
     if(i < entries.length - 1){
       const fadeFrames = Math.round(fps * 0.5);
+      const currentMediaType = mediaType; // Capture for transition
+      const currentSong = song;
+      const currentCover = cover;
       
       // Fade out current frame
       for(let f=0;f<fadeFrames;f++){
         const a=f/fadeFrames;
-        if(mediaType === 'video'){
+        if(currentMediaType === 'video'){
           // For video, just fade to black
           ctx.fillStyle=`rgba(0,0,0,${a})`;
           ctx.fillRect(0,0,vw,vh);
         } else {
-          drawFrame(ctx,vw,vh,song,rank,total,cover,1-a,duration);
+          drawFrame(ctx,vw,vh,currentSong,rank,total,currentCover,1-a,duration);
           ctx.fillStyle=`rgba(0,0,0,${a*a})`;
           ctx.fillRect(0,0,vw,vh);
         }
@@ -914,7 +922,7 @@ async function animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTim
 // ─────────────────────────────────────────────────────────────
 //  VIDEO ANIMATION (for video files)
 // ─────────────────────────────────────────────────────────────
-async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl){
+async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl,startTime=0){
   // Create video element and load it
   const video = document.createElement('video');
   video.crossOrigin = 'anonymous';
@@ -933,15 +941,13 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl){
   }
   
   await video.play();
+  // Seek to start time if specified
+  if(startTime > 0 && startTime < video.duration){
+    video.currentTime = startTime;
+  }
   
   const ms=duration*1000;
   const t0=performance.now();
-  
-  // Calculate video dimensions for pillarboxing (80% width, maintain aspect ratio)
-  const videoAreaW = vw * 0.8;
-  const videoAreaH = vh * 0.8;
-  const videoAreaX = (vw - videoAreaW) / 2;
-  const videoAreaY = (vh - videoAreaH) / 2;
   
   return new Promise(res=>{
     let last=t0;
@@ -964,7 +970,7 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl){
       }
       if(now-last>=interval){
         last=now;
-        drawVideoFrame(ctx,vw,vh,video,videoAreaX,videoAreaY,videoAreaW,videoAreaH,song,rank,total,el/ms,duration);
+        drawVideoFrame(ctx,vw,vh,video,song,rank,total,el/ms,duration);
       }
       requestAnimationFrame(frame);
     }
@@ -973,12 +979,12 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl){
 }
 
 // Draw video frame with pillarboxing and overlay info (80% width for video, 20% for metadata)
-function drawVideoFrame(ctx,vw,vh,video,x,y,w,h,song,rank,total,progress,duration){
+function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
   // Clear and fill background black
   ctx.fillStyle='#000';
   ctx.fillRect(0,0,vw,vh);
   
-  // Video area: 80% of screen width, centered vertically
+  // Video area: 80% of screen width, full height
   const videoAreaW = vw * 0.8;
   const videoAreaH = vh;
   const videoAreaX = (vw - videoAreaW) / 2;
@@ -1063,6 +1069,20 @@ function drawVideoFrame(ctx,vw,vh,video,x,y,w,h,song,rank,total,progress,duratio
   ctx.font=`500 14px 'Syne',sans-serif`;
   wrapText(ctx,song.gt||'Unknown',padL,iy,infoW,20,2);
   iy+=26;
+  
+  // Artists (composer, lyricist, arranger, etc.)
+  for(const role of ROLE_ORDER){
+    const arts=(song.ar||[]).filter(a=>a.r===role);
+    if(!arts.length) continue;
+    const names=arts.map(a=>a.n).join(', ');
+    ctx.fillStyle='rgba(232,197,71,0.55)';
+    ctx.font=`500 11px 'DM Mono',monospace`;
+    ctx.fillText((ROLE_LABEL[role]||'?')+':',padL,iy);
+    ctx.fillStyle='rgba(255,255,255,0.75)';
+    ctx.font=`400 13px 'Syne',sans-serif`;
+    wrapText(ctx,names,padL,iy+14,infoW,18,1);
+    iy+=32;
+  }
   
   // Rank number (bottom-left of info panel)
   const rkSize=Math.round(vw*0.035);
