@@ -1,0 +1,62 @@
+{
+  "config": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "bitrate": "8M",
+    "transition_duration": 0.5
+  },
+  "entries": [
+    {
+      "rank": 1,
+      "song": {
+        "id": "song001",
+        "t": "Sample Song One",
+        "tj": "サンプルソング",
+        "gt": "Sample Game 1",
+        "artists": "Artist Name",
+        "st": 1,
+        "au": null,
+        "vid": null
+      },
+      "duration": 15.0,
+      "startTime": 30.0,
+      "localFile": null,
+      "coverFile": null
+    },
+    {
+      "rank": 2,
+      "song": {
+        "id": "song002",
+        "t": "Sample Song Two",
+        "tj": "",
+        "gt": "Sample Game 2",
+        "artists": "Another Artist",
+        "st": 2,
+        "au": null,
+        "vid": null
+      },
+      "duration": 20.0,
+      "startTime": 0.0,
+      "localFile": null,
+      "coverFile": null
+    },
+    {
+      "rank": 3,
+      "song": {
+        "id": "song003",
+        "t": "Sample Song Three",
+        "tj": "三番目の歌",
+        "gt": "Sample Game 3",
+        "artists": "Third Artist",
+        "st": 3,
+        "au": null,
+        "vid": null
+      },
+      "duration": 18.0,
+      "startTime": 45.0,
+      "localFile": null,
+      "coverFile": null
+    }
+  ]
+}

@@ -1,7 +1,1 @@
-```
-# Video files
-*.mp4
-
-# JSON data files
-*.json
-```
+Nothing to output - the file changes only include source/config files (README.md, index.html) with no build artifacts, dependencies, or temp files that need to be ignored.

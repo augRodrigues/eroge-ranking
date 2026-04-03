@@ -1,6 +1,6 @@
 # ♪ EMQ Ranking Builder
 
-A browser-based tool for building and encoding eroge music ranking videos using the [ErogeMusicQuiz](https://erogemusicquiz.com/) database.
+A browser-based tool for building eroge music ranking videos using the [ErogeMusicQuiz](https://erogemusicquiz.com/) database, with optional Python-based encoding for higher quality output.
 
 **[→ Open the app](https://YOUR-USERNAME.github.io/eroge-ranking/)**
 
@@ -43,7 +43,36 @@ In your repo → Settings → Pages → deploy from `main` / root.
 3. Paste an EMQ link (e.g. `https://erogemusicquiz.com/music/12345`) with the **+ URL** button
 4. Reorder by dragging cards or using ↑↓ buttons
 5. Set clip length and start offset per song, or use **Apply to all**
-6. Click **▶ Generate video** — configure resolution/FPS, then encode
+6. Click **▶ Generate video** — choose either:
+   - **Browser encoding**: Real-time WebM generation (faster preview)
+   - **Export for Python**: JSON export for high-quality FFmpeg encoding
+
+---
+
+## Two encoding workflows
+
+### Option A: Browser encoding (built-in)
+
+- **Format**: WebM (VP9 + Opus)
+- **Encoding**: Real-time in-browser using Canvas + MediaRecorder
+- **Best for**: Quick previews, shorter rankings (< 50 songs)
+- **Limitations**: Timing inaccuracies, no audio crossfades, browser-dependent quality
+
+### Option B: Python encoder (recommended for final output)
+
+- **Format**: MP4 (H.264 + AAC) or WebM
+- **Encoding**: FFmpeg-based with precise timing and audio crossfades
+- **Best for**: Final uploads to YouTube, longer rankings, professional quality
+- **Requirements**: Python 3.8+, FFmpeg installed
+
+**Workflow:**
+1. Build your ranking in the browser app
+2. Click **▶ Generate video** → **Export for Python**
+3. Download `emq-encoder-input.json`
+4. Run the encoder:
+   ```bash
+   python emq_encoder.py emq-encoder-input.json --output ranking.mp4 --verbose
+   ```
 
 ---
 
@@ -60,17 +89,16 @@ In your repo → Settings → Pages → deploy from `main` / root.
 | Local audio upload | Per-song fallback when EMQ audio fails |
 | Save/Load | Export ranking as JSON, reload later |
 | Session restore | Ranking survives page refresh (sessionStorage) |
+| Python export | Generate JSON for high-quality external encoding |
 
 ---
 
 ## Video output
 
-- **Format**: WebM (VP9 + Opus) — directly uploadable to YouTube
-- **Encoding**: Real-time in-browser using Canvas + MediaRecorder
+### Browser encoding
+
 - **Duration**: Equal to sum of all clip lengths (e.g. 300 songs × 30s = 150 min)
-
-### What each frame shows
-
+- **What each frame shows**:
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  [blurred game cover background]                             │
@@ -97,6 +125,85 @@ Cover art is fetched from the **VNDB API** (public, no auth needed).
 The tool fetches audio directly from EMQ. Since EMQ requires login, **be logged into erogemusicquiz.com in the same browser** before encoding — the browser sends your session cookie automatically.
 
 If audio fetch fails (CORS or auth issue), use the **"📁 Upload local"** button on each song card to provide an audio file you downloaded manually.
+
+---
+
+## Python encoder (emq_encoder.py)
+
+A complete FFmpeg-based encoder that solves the limitations of browser encoding:
+
+### Features
+
+- ✅ Precise video timing (no frame drops or length mismatches)
+- ✅ Audio crossfades between songs (configurable transition duration)
+- ✅ Video crossfade transitions
+- ✅ Better quality control (CRF, preset, bitrate)
+- ✅ Reproducible output
+- ✅ Background processing (no browser tab needed)
+
+### Installation
+
+```bash
+# Ensure FFmpeg is installed
+# Ubuntu/Debian:
+sudo apt install ffmpeg
+# macOS:
+brew install ffmpeg
+# Windows: Download from ffmpeg.org or use choco/scoop
+```
+
+### Usage
+
+```bash
+# Basic usage
+python emq_encoder.py emq-encoder-input.json --output ranking.mp4
+
+# With verbose output
+python emq_encoder.py emq-encoder-input.json --output ranking.mp4 --verbose
+
+# Generate shell script with FFmpeg commands (for inspection/modification)
+python emq_encoder.py emq-encoder-input.json --generate-script encode.sh
+
+# Custom resolution
+python emq_encoder.py emq-encoder-input.json --output ranking.mp4 --width 1280 --height 720
+
+# Adjust crossfade duration
+python emq_encoder.py emq-encoder-input.json --output ranking.mp4 --transition 1.0
+```
+
+### Input JSON format
+
+The HTML app exports JSON in this format:
+```json
+{
+  "config": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "bitrate": "8M",
+    "transition_duration": 0.5
+  },
+  "entries": [
+    {
+      "rank": 1,
+      "song": {
+        "id": "12345",
+        "t": "Song Title",
+        "tj": "曲タイトル",
+        "gt": "Game Name",
+        "artists": "Artist Name",
+        "st": 1,
+        "au": "https://...",
+        "vid": "v12345"
+      },
+      "duration": 30.0,
+      "startTime": 0.0,
+      "localFile": null,
+      "coverFile": null
+    }
+  ]
+}
+```
 
 ---
 
@@ -128,8 +235,11 @@ URLs in the database use the internal hostname `emqselfhost` — the script repl
 | Missing table in build output | Pass more `.dat` files; check the "Unidentified blocks" hint in output |
 | No audio in video | Log into erogemusicquiz.com first; or upload local files |
 | CORS error on audio | Same — login required, or use local upload |
-| Slow encoding | Normal — it's real-time. 10 songs × 30s = 5 min of recording |
-| Output is `.webm` | To get `.mp4`: `ffmpeg -i ranking.webm -c:v libx264 -c:a aac ranking.mp4` |
+| Slow encoding (browser) | Normal — it's real-time. Use Python encoder for faster processing |
+| Video length wrong | Browser encoding limitation — use Python encoder |
+| Audio cuts between songs | Browser doesn't support crossfades — use Python encoder |
+| FFmpeg not found | Install FFmpeg and ensure it's in your PATH |
+| Python encoder too slow | Use `-preset ultrafast` or reduce CRF quality |
 
 ---
 
@@ -137,9 +247,11 @@ URLs in the database use the internal hostname `emqselfhost` — the script repl
 
 ```
 eroge-ranking/
-├── index.html     ← The entire app (single self-contained file)
-├── db.json        ← Generated by build_db.py (you create this)
-├── build_db.py    ← Run this once to build db.json
+├── index.html         ← The entire app (single self-contained file)
+├── db.json            ← Generated by build_db.py (you create this)
+├── build_db.py        ← Run this once to build db.json
+├── emq_encoder.py     ← Python video encoder (optional, for high-quality output)
+├── sample_ranking.json← Example input for emq_encoder.py
 └── README.md
 ```
 
