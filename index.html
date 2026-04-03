@@ -613,6 +613,26 @@ function exportForPythonEncoder(){
       artistStr = parts.join(' · ') || song.ar.map(a => a.n).join(', ');
     }
     
+    // Determine file type and set videoFile field for video files
+    let localFileName = null;
+    let videoFile = null;
+    if (r.localFile) {
+      localFileName = r.localFile.name;
+      const ext = localFileName.split('.').pop().toLowerCase();
+      if (['webm', 'mp4', 'avi', 'mkv', 'mov'].includes(ext)) {
+        videoFile = localFileName;
+      }
+    }
+    
+    // Also check URL for video files
+    let audioUrl = song.au || null;
+    if (audioUrl && !videoFile) {
+      const ext = audioUrl.split('?')[0].split('.').pop().toLowerCase();
+      if (['webm', 'mp4', 'avi', 'mkv', 'mov'].includes(ext)) {
+        videoFile = audioUrl;
+      }
+    }
+    
     return {
       rank: i + 1,
       song: {
@@ -621,14 +641,15 @@ function exportForPythonEncoder(){
         tj: song.tj || '',
         gt: song.gt || '',
         st: song.st || 0,
-        au: song.au || null,
+        au: videoFile ? null : audioUrl,  // Don't include au for video files
         vid: song.vid || null,
         artists: artistStr
       },
       duration: r.duration,
       startTime: r.startTime,
       // For local files, just use the filename - encoder will look in same directory
-      localFile: r.localFile ? r.localFile.name : null,
+      localFile: localFileName,
+      videoFile: videoFile,  // New field for video files (webm, mp4, etc.)
       coverFile: null // Cover is fetched from VNDB by encoder
     };
   });

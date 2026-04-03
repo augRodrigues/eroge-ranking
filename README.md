@@ -233,6 +233,25 @@ The exported JSON has this structure:
       "duration": 30.0,
       "startTime": 10.5,
       "localFile": "mysong.mp3",
+      "videoFile": null,
+      "coverFile": null
+    },
+    {
+      "rank": 2,
+      "song": {
+        "id": "67890",
+        "t": "Video Song",
+        "tj": "ビデオソング",
+        "gt": "Visual Novel",
+        "st": 1,
+        "au": null,
+        "vid": "v456",
+        "artists": "Vocals: Singer"
+      },
+      "duration": 30.0,
+      "startTime": 0.0,
+      "localFile": "opening.webm",
+      "videoFile": "opening.webm",
       "coverFile": null
     }
   ]
@@ -249,10 +268,23 @@ The exported JSON has this structure:
 
 ### Local files
 
-When you upload local audio files in the browser:
+When you upload local files in the browser:
 - The export includes only the filename (not full path)
 - Place these files in the **same directory** where you run `emq_encoder.py`
 - The encoder will automatically find them
+- For **video files** (webm, mp4, avi, mkv, mov), use the `"videoFile"` field
+- For **audio-only files** (mp3, ogg, wav, flac), use the `"localFile"` field
+
+### Video files (with cinematics)
+
+For eroge songs with video cinematics (like anime openings):
+1. Export your ranking from the browser app
+2. The JSON will include `"videoFile"` for video entries
+3. Place the video files (`.webm`, `.mp4`, etc.) in the same directory as the encoder
+4. The encoder will:
+   - Extract and use the video with its embedded audio
+   - Apply text overlays (rank, title, artist, game)
+   - Handle proper timing with start time offsets
 
 ### Features
 

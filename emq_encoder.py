@@ -40,8 +40,10 @@ class SongEntry:
     start_time: float
     local_file: Optional[str] = None
     audio_url: Optional[str] = None
+    video_url: Optional[str] = None  # For video files (webm, mp4, etc.)
     vndb_id: Optional[str] = None
     cover_file: Optional[str] = None
+    is_video: bool = False  # True if this is a video file (has cinematics)
 
 
 @dataclass
@@ -153,23 +155,24 @@ class VideoEncoder:
             if self.verbose:
                 self.log("Cleaned up temporary directory")
                 
-    def download_audio(self, entry: SongEntry, output_path: str) -> bool:
-        """Download audio from URL if needed"""
-        if not entry.audio_url:
-            return False
-            
+    def download_file(self, url: str, output_path: str) -> bool:
+        """Download a file (audio or video) from URL"""
         try:
             import urllib.request
-            urllib.request.urlretrieve(entry.audio_url, output_path)
+            urllib.request.urlretrieve(url, output_path)
             return True
         except Exception as e:
-            self.log(f"Failed to download audio: {e}", "ERROR")
+            self.log(f"Failed to download {url}: {e}", "ERROR")
             return False
-            
+    
     def prepare_audio(self, entry: SongEntry, index: int) -> Optional[str]:
-        """Prepare audio file for a song entry"""
+        """Prepare audio file for a song entry. For video files, audio will be extracted from video."""
         output_path = os.path.join(self.temp_dir, f"audio_{index:04d}.wav")
         
+        # If this is a video file, we'll extract audio from it later
+        if entry.is_video:
+            return None  # Audio handled in create_video_segment
+            
         # Try local file first - check in current directory if only filename provided
         if entry.local_file:
             local_path = entry.local_file
@@ -199,7 +202,7 @@ class VideoEncoder:
         # Try downloaded/cached audio
         if entry.audio_url:
             downloaded = os.path.join(self.temp_dir, f"downloaded_{index:04d}.tmp")
-            if self.download_audio(entry, downloaded):
+            if self.download_file(entry.audio_url, downloaded):
                 try:
                     cmd = [
                         "ffmpeg", "-y",
@@ -268,16 +271,70 @@ class VideoEncoder:
         subprocess.run(cmd, capture_output=True, check=True)
         return output_path
         
+    def prepare_video(self, entry: SongEntry, index: int) -> Optional[str]:
+        """Prepare video file for a song entry (for songs with cinematics)."""
+        output_path = os.path.join(self.temp_dir, f"video_{index:04d}.mp4")
+        
+        # Try local video file first
+        if entry.local_file:
+            local_path = entry.local_file
+            if not os.path.exists(local_path):
+                local_path = os.path.join(os.getcwd(), entry.local_file)
+            
+            if os.path.exists(local_path):
+                try:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", local_path,
+                        "-ss", str(entry.start_time),
+                        "-t", str(entry.duration),
+                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=keep,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                        "-c:v", self.project.config.codec,
+                        "-preset", "ultrafast",
+                        "-crf", str(self.project.config.crf),
+                        "-pix_fmt", self.project.config.pixel_format,
+                        "-r", str(self.project.config.fps),
+                        output_path
+                    ]
+                    if self.verbose:
+                        self.log(f"Processing local video: {local_path}")
+                    subprocess.run(cmd, capture_output=True, check=True)
+                    return output_path
+                except subprocess.CalledProcessError as e:
+                    self.log(f"Failed to process local video: {e}", "ERROR")
+        
+        # Try downloaded video from URL
+        if entry.video_url:
+            downloaded = os.path.join(self.temp_dir, f"downloaded_video_{index:04d}.tmp")
+            if self.download_file(entry.video_url, downloaded):
+                try:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", downloaded,
+                        "-ss", str(entry.start_time),
+                        "-t", str(entry.duration),
+                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=keep,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                        "-c:v", self.project.config.codec,
+                        "-preset", "ultrafast",
+                        "-crf", str(self.project.config.crf),
+                        "-pix_fmt", self.project.config.pixel_format,
+                        "-r", str(self.project.config.fps),
+                        output_path
+                    ]
+                    subprocess.run(cmd, capture_output=True, check=True)
+                    return output_path
+                except subprocess.CalledProcessError as e:
+                    self.log(f"Failed to process downloaded video: {e}", "ERROR")
+        
+        return None
+    
     def create_video_segment(self, entry: SongEntry, index: int) -> Optional[str]:
-        """Create a video segment for a single song"""
+        """Create a video segment for a single song. Handles both audio-only and video songs."""
         output_path = os.path.join(self.temp_dir, f"segment_{index:04d}.mp4")
         
         # Get colors and labels
         type_color = ColorPalette.TYPE_COLORS.get(entry.song_type, ColorPalette.TYPE_COLORS[0])[0]
         type_label = ColorPalette.TYPE_LABELS.get(entry.song_type, "?")
-        
-        # Generate background
-        bg_path = self.generate_background(entry, index)
         
         # Escape special characters in text for FFmpeg
         def escape_text(text):
@@ -288,7 +345,7 @@ class VideoEncoder:
         # Build filter complex for overlays
         filters = []
         
-        # Rank number overlay (using default font)
+        # Rank number overlay
         rank_text = escape_text(f"#{entry.rank}")
         filters.append(
             f"drawtext=text='{rank_text}':fontsize=72:fontcolor={type_color}:"
@@ -330,21 +387,58 @@ class VideoEncoder:
         
         filter_str = ",".join(filters)
         
-        # Create video segment with loop and proper duration
-        cmd = [
-            "ffmpeg", "-y",
-            "-loop", "1",
-            "-i", bg_path,
-            "-t", str(entry.duration),
-            "-vf", filter_str,
-            "-c:v", self.project.config.codec,
-            "-preset", "ultrafast",  # Use ultrafast for quick encoding
-            "-crf", str(self.project.config.crf),
-            "-pix_fmt", self.project.config.pixel_format,
-            "-an",
-            "-r", str(self.project.config.fps),
-            output_path
-        ]
+        # Handle video files differently from audio-only
+        if entry.is_video:
+            # Prepare the video file (with cinematics)
+            video_path = self.prepare_video(entry, index)
+            if not video_path:
+                self.log(f"No video available for #{entry.rank}: {entry.title}, falling back to static image", "WARN")
+                # Fall back to static image generation
+                bg_path = self.generate_background(entry, index)
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-loop", "1",
+                    "-i", bg_path,
+                    "-t", str(entry.duration),
+                    "-vf", filter_str,
+                    "-c:v", self.project.config.codec,
+                    "-preset", "ultrafast",
+                    "-crf", str(self.project.config.crf),
+                    "-pix_fmt", self.project.config.pixel_format,
+                    "-an",
+                    "-r", str(self.project.config.fps),
+                    output_path
+                ]
+            else:
+                # Apply text overlays on top of the video
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-vf", filter_str,
+                    "-c:v", self.project.config.codec,
+                    "-preset", "ultrafast",
+                    "-crf", str(self.project.config.crf),
+                    "-pix_fmt", self.project.config.pixel_format,
+                    "-r", str(self.project.config.fps),
+                    output_path
+                ]
+        else:
+            # Audio-only: generate static background with overlays
+            bg_path = self.generate_background(entry, index)
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1",
+                "-i", bg_path,
+                "-t", str(entry.duration),
+                "-vf", filter_str,
+                "-c:v", self.project.config.codec,
+                "-preset", "ultrafast",
+                "-crf", str(self.project.config.crf),
+                "-pix_fmt", self.project.config.pixel_format,
+                "-an",
+                "-r", str(self.project.config.fps),
+                output_path
+            ]
         
         try:
             if self.verbose:
@@ -361,27 +455,55 @@ class VideoEncoder:
             return None
             
     def concatenate_segments(self, output_path: str):
-        """Concatenate all video segments with crossfade transitions"""
+        """Concatenate all video segments with crossfade transitions and audio"""
         if not self.segment_files:
             raise ValueError("No segment files to concatenate")
             
         if len(self.segment_files) == 1:
-            # Single segment, just copy
-            shutil.copy(self.segment_files[0], output_path)
+            # Single segment - check if we have audio to merge
+            seg = self.segment_files[0]
+            entry = self.project.entries[0]
+            
+            if entry.is_video:
+                # Video file already has audio, just copy
+                shutil.copy(seg, output_path)
+            elif self.audio_files and len(self.audio_files) > 0:
+                # Merge audio with video segment
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", seg,
+                    "-i", self.audio_files[0],
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-b:a", self.project.config.audio_bitrate,
+                    "-shortest",
+                    output_path
+                ]
+                subprocess.run(cmd, capture_output=True, check=True)
+            else:
+                # No audio, just copy video
+                shutil.copy(seg, output_path)
             return
             
         n_segments = len(self.segment_files)
         transition_dur = self.project.config.transition_duration
         
-        # Build inputs list
+        # Build inputs list for video segments
         inputs = []
         for seg in self.segment_files:
             inputs.extend(["-i", seg])
         
+        # Add audio files as inputs
+        audio_inputs = []
+        for i, audio in enumerate(self.audio_files):
+            audio_inputs.extend(["-i", audio])
+        
+        all_inputs = inputs + audio_inputs
+        
         # Calculate cumulative durations for proper offset calculation
         durations = [e.duration for e in self.project.entries]
         
-        # Build xfade chain - each new segment fades in at (cumulative_duration - transition_dur)
+        # Build xfade chain for video
         filter_parts = []
         cumulative = durations[0]
         
@@ -400,16 +522,48 @@ class VideoEncoder:
             cumulative += durations[i]
         
         final_video = f"v{n_segments-2}"
-        filter_complex = ";".join(filter_parts) + f";[{final_video}]format=yuv420p[outv]"
+        
+        # Build acrossfade chain for audio (if we have audio files)
+        has_audio = len(self.audio_files) > 0
+        audio_filter = ""
+        if has_audio:
+            audio_start_idx = n_segments  # Audio inputs start after video inputs
+            if len(self.audio_files) == 1:
+                audio_filter = f"[{audio_start_idx}:a]anull[outa]"
+            else:
+                # First crossfade
+                audio_parts = []
+                audio_parts.append(
+                    f"[{audio_start_idx}:a][{audio_start_idx+1}:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a0]"
+                )
+                
+                # Chain remaining audio files
+                for i in range(2, len(self.audio_files)):
+                    audio_parts.append(
+                        f"[a{i-2}][{audio_start_idx+i}:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a{i-1}]"
+                    )
+                
+                final_audio = f"a{len(self.audio_files)-2}"
+                audio_filter = ";".join(audio_parts) + f";[{final_audio}]anormalize[outa]"
+        
+        # Combine video and audio filters
+        if has_audio:
+            filter_complex = ";".join(filter_parts) + f";[{final_video}]format=yuv420p[outv];{audio_filter}"
+            map_args = ["-map", "[outv]", "-map", "[outa]"]
+        else:
+            filter_complex = ";".join(filter_parts) + f";[{final_video}]format=yuv420p[outv]"
+            map_args = ["-map", "[outv]"]
         
         cmd = [
             "ffmpeg", "-y",
-            *inputs,
+            *all_inputs,
             "-filter_complex", filter_complex,
-            "-map", "[outv]",
+            *map_args,
             "-c:v", self.project.config.codec,
             "-preset", "ultrafast",
             "-crf", str(self.project.config.crf),
+            "-c:a", "aac",
+            "-b:a", self.project.config.audio_bitrate,
             output_path
         ]
         
@@ -447,9 +601,16 @@ class VideoEncoder:
         try:
             self.setup_temp_dir()
             
-            # Process each song
+            # Process each song - prepare audio/video files first
             self.log(f"Processing {len(self.project.entries)} songs...")
             for i, entry in enumerate(self.project.entries):
+                # For video files, we don't need separate audio prep
+                if not entry.is_video:
+                    audio = self.prepare_audio(entry, i)
+                    if audio:
+                        self.audio_files.append(audio)
+                
+                # Create video segment (includes video or static image with overlays)
                 segment = self.create_video_segment(entry, i)
                 if segment:
                     self.segment_files.append(segment)
@@ -493,6 +654,22 @@ def load_ranking_json(json_path: str) -> EncodingProject:
     entries_data = data.get("entries", [])
     for i, entry in enumerate(entries_data):
         song = entry.get("song", {})
+        
+        # Determine if this is a video file based on extension
+        is_video = False
+        local_file = entry.get("localFile")
+        audio_url = song.get("au")
+        video_url = entry.get("videoFile")  # New field for video files
+        
+        # Check local file extension
+        if local_file:
+            ext = local_file.split('.')[-1].lower() if '.' in local_file else ''
+            is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
+        # Check URL extension
+        elif audio_url:
+            ext = audio_url.split('?')[0].split('.')[-1].lower()
+            is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
+        
         song_entry = SongEntry(
             rank=entry.get("rank", i + 1),
             song_id=song.get("id", ""),
@@ -503,10 +680,12 @@ def load_ranking_json(json_path: str) -> EncodingProject:
             song_type=song.get("st", 0),
             duration=entry.get("duration", 15.0),
             start_time=entry.get("startTime", 0.0),
-            local_file=entry.get("localFile"),
-            audio_url=song.get("au"),
+            local_file=local_file,
+            audio_url=audio_url if not is_video else None,  # Don't use audio_url for video files
+            video_url=video_url or (audio_url if is_video else None),  # Use audio_url as video_url if it's a video
             vndb_id=song.get("vid"),
             cover_file=entry.get("coverFile"),
+            is_video=is_video,
         )
         project.entries.append(song_entry)
         

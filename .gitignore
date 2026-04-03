@@ -1,8 +1,31 @@
 ```
-# Test files and artifacts
-test_*.json
-test_*.png
-test_*.mp4
-test_*.sh
-sample_*.json
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Dependencies
+.venv/
+venv/
+node_modules/
+
+# Build artifacts
+dist/
+build/
+target/
 ```
