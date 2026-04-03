@@ -402,6 +402,7 @@ main{flex:1;display:flex;flex-direction:column;max-width:1400px;
 
   <div class="vmodal-btns">
     <a class="vdl" id="vm-dl" download="ranking.webm">⬇ Download .webm</a>
+    <button class="modal-cancel" id="vm-export-py" style="background:var(--surface);border:1px solid var(--border);color:var(--muted)">🐍 Export for Python</button>
     <button class="modal-cancel" id="vm-cancel">Cancel</button>
     <button class="modal-ok" id="vm-go" style="padding:10px 20px;font-size:14px">Generate</button>
   </div>
@@ -591,6 +592,73 @@ function saveToFile(){
   const bl=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(bl); a.download='emq-ranking.json'; a.click(); URL.revokeObjectURL(a.href);
 }
+
+// Export ranking data for Python encoder (emq_encoder.py)
+function exportForPythonEncoder(){
+  const [w,h] = $('v-res').value.split('x').map(Number);
+  const fps = parseInt($('v-fps').value);
+  const bitrate = $('v-bitrate').value;
+  const dir = $('v-dir').value;
+  
+  const entries = ranking.map((r,i) => {
+    const song = r.song;
+    // Build artist string from artist array
+    let artistStr = '';
+    if (song.ar && Array.isArray(song.ar)) {
+      const vocals = song.ar.filter(a => a.r === 1).map(a => a.n).join(', ');
+      const composers = song.ar.filter(a => a.r === 2).map(a => a.n).join(', ');
+      const parts = [];
+      if (vocals) parts.push('Vocals: ' + vocals);
+      if (composers) parts.push('Music: ' + composers);
+      artistStr = parts.join(' · ') || song.ar.map(a => a.n).join(', ');
+    }
+    
+    return {
+      rank: i + 1,
+      song: {
+        id: String(song.id),
+        t: song.t || '',
+        tj: song.tj || '',
+        gt: song.gt || '',
+        st: song.st || 0,
+        au: song.au || null,
+        vid: song.vid || null,
+        artists: artistStr
+      },
+      duration: r.duration,
+      startTime: r.startTime,
+      localFile: r.localFile ? r.localFile.name : null,
+      coverFile: null // Cover is fetched from VNDB by encoder
+    };
+  });
+  
+  // If order is desc (First → Last), reverse the entries
+  if (dir === 'desc') {
+    entries.reverse();
+    // Reassign ranks after reversing
+    entries.forEach((e, idx) => e.rank = idx + 1);
+  }
+  
+  const data = {
+    config: {
+      width: w,
+      height: h,
+      fps: fps,
+      bitrate: bitrate,
+      transition_duration: 0.5
+    },
+    entries: entries
+  };
+  
+  const bl = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(bl);
+  a.download = 'emq-encoder-input.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Exported emq-encoder-input.json');
+}
+
 function loadFromFile(text){
   try{
     const data=JSON.parse(text);
@@ -604,6 +672,7 @@ function loadFromFile(text){
     saveSession(); renderRanking();
   }catch(e){ toast('Invalid JSON',true); }
 }
+
 
 // ─────────────────────────────────────────────────────────────
 //  RENDER
@@ -1547,6 +1616,7 @@ function bindEvents(){
     $('vm-dl').classList.remove('show'); $('vm-cancel').textContent='Cancel';
     if(blobUrl){ URL.revokeObjectURL(blobUrl); blobUrl=null; }
   }
+  $('vm-export-py').addEventListener('click', () => { exportForPythonEncoder(); });
   $('vm-go').addEventListener('click',()=>{ $('vm-go').style.display='none'; generateVideo().catch(e=>{ toast('Error: '+e.message,true); console.error(e); }); });
   $('vm-cancel').addEventListener('click',()=>{ cancelEnc=true; $('vmodal-bg').classList.remove('open'); });
 }
