@@ -812,16 +812,12 @@ async function generateVideo(){
   const videoStream=canvas.captureStream(fps);
   const stream=new MediaStream([...videoStream.getVideoTracks(),...audioDest.stream.getAudioTracks()]);
   const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')?'video/webm;codecs=vp9,opus':'video/webm';
-  // Use higher bitrate and set keyframe interval via advanced options if supported
+  // Use higher bitrate for better quality (8 Mbps minimum)
   const recorderOptions = {
     mimeType: mime,
-    videoBitsPerSecond: bitrate,
+    videoBitsPerSecond: Math.max(bitrate, 8000000),
     audioBitsPerSecond: 128000
   };
-  // Add keyframe interval for better playback (every 2 seconds)
-  if(mime.includes('vp9')){
-    recorderOptions.videoBitsPerSecond = Math.max(bitrate, 5000000);
-  }
   const recorder=new MediaRecorder(stream, recorderOptions);
   const chunks=[]; let recDone=false;
   recorder.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
@@ -895,19 +891,22 @@ async function generateVideo(){
       for(let f=0;f<fadeFrames;f++){
         const a=f/fadeFrames; // 0 to 1
         
+        // Clear canvas first
+        ctx.fillStyle='#000';
+        ctx.fillRect(0,0,vw,vh);
+        
         // Draw next frame fading in (background layer)
         if(nextMediaType === 'video'){
-          // For video, we can't easily show the next video without loading it
-          // Just fade to black then let next iteration handle it
-          ctx.fillStyle='#000';
-          ctx.fillRect(0,0,vw,vh);
+          // For video transitions, show black background with next song info panel only
+          // This creates a smooth fade-in effect as the next video will start from black
+          drawVideoFrameInfoOnly(ctx,vw,vh,nextSong,nextRank,total,a,duration);
         } else {
           drawFrame(ctx,vw,vh,nextSong,nextRank,total,nextCover,a,duration);
         }
         
         // Draw current frame fading out (foreground layer with decreasing opacity)
         if(currentMediaType === 'video'){
-          // For video transitions, just fade to black smoothly
+          // Fade current video to black smoothly
           ctx.fillStyle=`rgba(0,0,0,${a})`;
           ctx.fillRect(0,0,vw,vh);
         } else {
@@ -963,9 +962,17 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl,star
     const res = await fetch(videoUrl, {credentials:'include'});
     const blob = await res.blob();
     video.src = URL.createObjectURL(blob);
+    
+    // Wait for full metadata load
     await new Promise((resolve, reject) => {
-      video.onloadedmetadata = resolve;
-      video.onerror = reject;
+      video.onloadedmetadata = () => {
+        console.log('Video metadata loaded:', video.videoWidth, 'x', video.videoHeight, 'duration:', video.duration);
+        resolve();
+      };
+      video.onerror = (e) => {
+        console.error('Video load error:', e);
+        reject(e);
+      };
       video.load();
     });
   }catch(e){
@@ -974,12 +981,15 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl,star
     return animateSong(ctx,vw,vh,song,rank,total,null,duration,fps,0);
   }
   
-  // Wait for video to be fully loaded with dimensions
+  // Wait for first frame to be available
   await new Promise(resolve => {
     if(video.readyState >= 2){
       resolve();
     } else {
-      video.onloadeddata = resolve;
+      video.onloadeddata = () => {
+        console.log('First video frame loaded');
+        resolve();
+      };
     }
   });
   
@@ -988,18 +998,43 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl,star
     video.currentTime = startTime;
     // Wait for seek to complete
     await new Promise(resolve => {
-      video.onseeked = resolve;
+      if(video.seeking === false){
+        resolve();
+      } else {
+        video.onseeked = () => {
+          console.log('Video seeked to:', video.currentTime);
+          resolve();
+        };
+      }
+    });
+  } else if(startTime === 0){
+    // Ensure we're at the beginning
+    video.currentTime = 0;
+    await new Promise(resolve => {
+      if(video.seeking === false){
+        resolve();
+      } else {
+        video.onseeked = resolve;
+      }
     });
   }
   
-  await video.play();
+  // Start playback
+  try{
+    await video.play();
+    console.log('Video playback started');
+  }catch(e){
+    console.error('Video play failed:', e);
+  }
   
   const ms=duration*1000;
   const t0=performance.now();
+  const endTime = startTime + duration;
   
   return new Promise(res=>{
     let last=t0;
     const interval=1000/fps-2;
+    let frameCount = 0;
     
     function frame(){
       if(cancelEnc){
@@ -1013,13 +1048,23 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl,star
       if(el>=ms){
         video.pause();
         URL.revokeObjectURL(video.src);
+        console.log('Video encoding complete, frames:', frameCount);
         res();
         return;
       }
       if(now-last>=interval){
         last=now;
-        // Calculate progress based on actual video time, not wall clock time
-        const vidProgress = Math.min(1, Math.max(0, (video.currentTime - startTime) / duration));
+        frameCount++;
+        
+        // Calculate progress based on actual video time relative to our clip duration
+        let vidProgress;
+        if(video.duration && video.duration > 0){
+          vidProgress = Math.min(1, Math.max(0, (video.currentTime - startTime) / duration));
+        } else {
+          // Fallback to wall-clock time if video duration unavailable
+          vidProgress = Math.min(1, el / ms);
+        }
+        
         drawVideoFrame(ctx,vw,vh,video,song,rank,total,vidProgress,duration);
       }
       requestAnimationFrame(frame);
@@ -1049,7 +1094,7 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
   const videoAreaY = 0;
   
   // Only draw video if it's loaded and has dimensions
-  if(video.videoWidth > 0 && video.videoHeight > 0){
+  if(video && video.videoWidth > 0 && video.videoHeight > 0){
     // Calculate video display size maintaining aspect ratio (pillarbox for 4:3)
     const vidAR = video.videoWidth / video.videoHeight;
     const areaAR = videoAreaW / videoAreaH;
@@ -1073,6 +1118,30 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
     ctx.drawImage(video, drawX, drawY, drawW, drawH);
   }
   
+  // Draw info panel content (can be called without video for transitions)
+  drawVideoFrameInfo(ctx,vw,vh,song,rank,total,progress,duration);
+}
+
+// Draw only the info panel portion of a video frame (for transitions)
+function drawVideoFrameInfoOnly(ctx,vw,vh,song,rank,total,alpha,duration){
+  // Clear and fill background black
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,vw,vh);
+  
+  // Left panel (20% of screen) for metadata with dark gradient
+  const infoPanelW = vw * 0.2;
+  const lg=ctx.createLinearGradient(0,0,infoPanelW,0);
+  lg.addColorStop(0,`rgba(8,8,14,${alpha*0.98})`);
+  lg.addColorStop(1,`rgba(8,8,14,${alpha*0.95})`);
+  ctx.fillStyle=lg;
+  ctx.fillRect(0,0,infoPanelW,vh);
+  
+  // Draw info content with alpha
+  drawVideoFrameInfo(ctx,vw,vh,song,rank,total,alpha,duration,true);
+}
+
+// Draw info panel content for video frames
+function drawVideoFrameInfo(ctx,vw,vh,song,rank,total,progress,duration,isAlpha=false){
   if(!song) return;
   
   const type=song.st||0;
@@ -1087,16 +1156,16 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
   // Type badge
   const tBW=typeLabel.length*10+24, tBH=32;
   rRect(ctx,padL,iy,tBW,tBH,6);
-  ctx.fillStyle=typeColor+'28'; ctx.fill();
-  ctx.strokeStyle=typeColor+'60'; ctx.lineWidth=1; ctx.stroke();
-  ctx.fillStyle=typeColor;
+  ctx.fillStyle=isAlpha?hexToRgba(typeColor+'28',progress):typeColor+'28'; ctx.fill();
+  ctx.strokeStyle=isAlpha?hexToRgba(typeColor+'60',progress):typeColor+'60'; ctx.lineWidth=1; ctx.stroke();
+  ctx.fillStyle=isAlpha?hexToRgba(typeColor,progress):typeColor;
   ctx.font=`700 13px 'Syne',sans-serif`;
   ctx.textBaseline='middle'; ctx.textAlign='left';
   ctx.fillText(typeLabel.toUpperCase(), padL+12, iy+tBH/2);
   iy+=tBH+18;
   
   // Song title
-  ctx.fillStyle='#ffffff';
+  ctx.fillStyle=isAlpha?`rgba(255,255,255,${progress})`:'#ffffff';
   ctx.textBaseline='alphabetic';
   const tsize=Math.max(18,Math.min(32,Math.floor(800/Math.max(song.t.length,6))));
   ctx.font=`700 ${tsize}px 'Syne',sans-serif`;
@@ -1105,7 +1174,7 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
   // Japanese title
   if(song.tj && song.tj!==song.t){
     iy+=4;
-    ctx.fillStyle='rgba(255,255,255,0.45)';
+    ctx.fillStyle=isAlpha?`rgba(255,255,255,${progress*0.45})`:'rgba(255,255,255,0.45)';
     ctx.font=`400 14px 'Shippori Mincho B1',serif`;
     wrapText(ctx,song.tj,padL,iy,infoW,20,1);
     iy+=22;
@@ -1113,12 +1182,12 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
   
   // Divider
   iy+=10;
-  ctx.fillStyle='rgba(255,255,255,0.1)';
+  ctx.fillStyle=isAlpha?`rgba(255,255,255,${progress*0.1})`:'rgba(255,255,255,0.1)';
   ctx.fillRect(padL,iy,Math.min(100,infoW*0.4),1.5);
   iy+=14;
   
   // Game title
-  ctx.fillStyle='rgba(255,255,255,0.78)';
+  ctx.fillStyle=isAlpha?`rgba(255,255,255,${progress*0.78})`:'rgba(255,255,255,0.78)';
   ctx.font=`500 14px 'Syne',sans-serif`;
   wrapText(ctx,song.gt||'Unknown',padL,iy,infoW,20,2);
   iy+=26;
@@ -1128,10 +1197,10 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
     const arts=(song.ar||[]).filter(a=>a.r===role);
     if(!arts.length) continue;
     const names=arts.map(a=>a.n).join(', ');
-    ctx.fillStyle='rgba(232,197,71,0.55)';
+    ctx.fillStyle=isAlpha?`rgba(232,197,71,${progress*0.55})`:'rgba(232,197,71,0.55)';
     ctx.font=`500 11px 'DM Mono',monospace`;
     ctx.fillText((ROLE_LABEL[role]||'?')+':',padL,iy);
-    ctx.fillStyle='rgba(255,255,255,0.75)';
+    ctx.fillStyle=isAlpha?`rgba(255,255,255,${progress*0.75})`:'rgba(255,255,255,0.75)';
     ctx.font=`400 13px 'Syne',sans-serif`;
     wrapText(ctx,names,padL,iy+14,infoW,18,1);
     iy+=32;
@@ -1140,27 +1209,50 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
   // Rank number (bottom-left of info panel)
   const rkSize=Math.round(vw*0.035);
   ctx.font=`900 ${rkSize}px 'DM Mono',monospace`;
-  ctx.fillStyle=typeColor;
+  ctx.fillStyle=isAlpha?hexToRgba(typeColor,progress):typeColor;
   ctx.textBaseline='bottom';
-  ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=15;
+  if(!isAlpha){
+    ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=15;
+  }
   ctx.fillText('#'+rank, padL+4, vh-padV);
   ctx.shadowBlur=0;
   
   // Progress bar at bottom (full width)
   const barY=vh-28, barH=4;
-  ctx.fillStyle='rgba(255,255,255,0.08)';
+  ctx.fillStyle=isAlpha?`rgba(255,255,255,${progress*0.08})`:'rgba(255,255,255,0.08)';
   ctx.fillRect(0,barY,vw,barH);
-  ctx.fillStyle=typeColor;
+  ctx.fillStyle=isAlpha?hexToRgba(typeColor,progress):typeColor;
   ctx.fillRect(0,barY,vw*progress,barH);
   
   // Timer
   const rem=Math.ceil(duration*(1-progress));
   const mm=Math.floor(rem/60), ss=String(rem%60).padStart(2,'0');
-  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillStyle=isAlpha?`rgba(255,255,255,${progress*0.5})`:'rgba(255,255,255,0.5)';
   ctx.font=`400 13px 'DM Mono',monospace`;
   ctx.textBaseline='middle'; ctx.textAlign='right';
   ctx.fillText(`${mm}:${ss}`,vw-12,barY+barH/2);
   ctx.textAlign='left';
+}
+
+// Helper to convert hex color to rgba with alpha
+function hexToRgba(hex,alpha){
+  // Remove # if present
+  hex=hex.replace('#','');
+  // Parse rgb values
+  let r,g,b,a;
+  if(hex.length===6){
+    r=parseInt(hex.substring(0,2),16);
+    g=parseInt(hex.substring(2,4),16);
+    b=parseInt(hex.substring(4,6),16);
+  }else if(hex.length===8){
+    r=parseInt(hex.substring(0,2),16);
+    g=parseInt(hex.substring(2,4),16);
+    b=parseInt(hex.substring(4,6),16);
+    a=parseInt(hex.substring(6,8),16)/255;
+  }else{
+    return `rgba(255,255,255,${alpha})`;
+  }
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 // ─────────────────────────────────────────────────────────────
