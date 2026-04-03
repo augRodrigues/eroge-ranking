@@ -279,7 +279,7 @@ class VideoEncoder:
         """Prepare video file for a song entry (for songs with cinematics)."""
         output_path = os.path.join(self.temp_dir, f"video_{index:04d}.mp4")
         
-        # Try local video file first
+        # Try local video file first (from local_file field)
         if entry.local_file:
             local_path = entry.local_file
             if not os.path.exists(local_path):
@@ -311,17 +311,23 @@ class VideoEncoder:
                     if self.verbose and e.stderr:
                         self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
         
-        # Try downloaded video from URL
+        # Try video_url field (may contain local path or URL)
         if entry.video_url:
-            downloaded = os.path.join(self.temp_dir, f"downloaded_video_{index:04d}.tmp")
-            if self.download_file(entry.video_url, downloaded):
+            # Check if video_url is a local file path
+            video_path = entry.video_url
+            if not os.path.exists(video_path):
+                video_path = os.path.join(os.getcwd(), entry.video_url)
+            
+            if os.path.exists(video_path):
+                # It's a local file
                 try:
+                    video_path = os.path.abspath(video_path)
                     cmd = [
                         "ffmpeg", "-y",
-                        "-i", downloaded,
+                        "-i", video_path,
                         "-ss", str(entry.start_time),
                         "-t", str(entry.duration),
-                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=keep,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
                         "-c:v", self.project.config.codec,
                         "-preset", "ultrafast",
                         "-crf", str(self.project.config.crf),
@@ -329,10 +335,36 @@ class VideoEncoder:
                         "-r", str(self.project.config.fps),
                         output_path
                     ]
+                    if self.verbose:
+                        self.log(f"Processing video from video_url: {video_path}")
                     subprocess.run(cmd, capture_output=True, check=True)
                     return output_path
                 except subprocess.CalledProcessError as e:
-                    self.log(f"Failed to process downloaded video: {e}", "ERROR")
+                    self.log(f"Failed to process video from video_url: {e}", "ERROR")
+                    if self.verbose and e.stderr:
+                        self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
+            else:
+                # It's a URL, try to download
+                downloaded = os.path.join(self.temp_dir, f"downloaded_video_{index:04d}.tmp")
+                if self.download_file(entry.video_url, downloaded):
+                    try:
+                        cmd = [
+                            "ffmpeg", "-y",
+                            "-i", downloaded,
+                            "-ss", str(entry.start_time),
+                            "-t", str(entry.duration),
+                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                            "-c:v", self.project.config.codec,
+                            "-preset", "ultrafast",
+                            "-crf", str(self.project.config.crf),
+                            "-pix_fmt", self.project.config.pixel_format,
+                            "-r", str(self.project.config.fps),
+                            output_path
+                        ]
+                        subprocess.run(cmd, capture_output=True, check=True)
+                        return output_path
+                    except subprocess.CalledProcessError as e:
+                        self.log(f"Failed to process downloaded video: {e}", "ERROR")
         
         return None
     
@@ -721,7 +753,7 @@ def load_ranking_json(json_path: str) -> EncodingProject:
             start_time=entry.get("startTime", 0.0),
             local_file=local_file,
             audio_url=audio_url if not is_video else None,  # Don't use audio_url for video files
-            video_url=video_url or (audio_url if is_video else None),  # Use audio_url as video_url if it's a video
+            video_url=video_url or (local_file if is_video else None) or (audio_url if is_video else None),  # Use local_file for video files, fallback to audio_url
             vndb_id=song.get("vid"),
             cover_file=entry.get("coverFile"),
             is_video=is_video,

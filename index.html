@@ -614,10 +614,9 @@ function exportForPythonEncoder(){
     }
     
     // Determine file type and set videoFile field for video files
-    let localFileName = null;
+    let localFileName = r.localFileName || (r.localFile ? r.localFile.name : null);
     let videoFile = null;
-    if (r.localFile) {
-      localFileName = r.localFile.name;
+    if (localFileName) {
       const ext = localFileName.split('.').pop().toLowerCase();
       if (['webm', 'mp4', 'avi', 'mkv', 'mov'].includes(ext)) {
         videoFile = localFileName;
@@ -783,7 +782,15 @@ function renderRanking(){
       if(rm) removeSong(+rm.dataset.rm);
       if(ul){
         const inp=document.createElement('input'); inp.type='file'; inp.accept='audio/*,video/*';
-        inp.onchange=()=>{ if(inp.files[0]){ranking[+ul.dataset.ul].localFile=inp.files[0]; renderRanking();} };
+        inp.onchange=()=>{ 
+          if(inp.files[0]){
+            const file = inp.files[0];
+            // Store both the file object and its name for Python encoder
+            ranking[+ul.dataset.ul].localFile = file;
+            ranking[+ul.dataset.ul].localFileName = file.name;  // Keep filename for export
+            renderRanking();
+          } 
+        };
         inp.click();
       }
     });
