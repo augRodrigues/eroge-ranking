@@ -194,13 +194,14 @@ main{flex:1;display:flex;flex-direction:column;max-width:820px;
   z-index:500;display:none;align-items:center;justify-content:center;padding:20px}
 .modal-bg.open{display:flex}
 .modal{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);
-  padding:26px;width:100%;max-width:460px}
+  padding:26px;width:100%;max-width:520px}
 .modal h2{font-size:17px;font-weight:700;margin-bottom:14px}
 .modal-input{width:100%;padding:9px 12px;background:var(--surface);
   border:1px solid var(--border);border-radius:var(--r);
   font-size:14px;color:var(--text);margin-bottom:10px}
 .modal-input:focus{border-color:var(--accent)}
 .modal-err{font-size:12px;color:var(--red);margin-bottom:8px;display:none}
+.modal-note{font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6}
 .modal-btns{display:flex;gap:8px;justify-content:flex-end}
 .modal-cancel{padding:8px 16px;border-radius:var(--r);font-size:13px;
   background:var(--surface);border:1px solid var(--border);color:var(--muted);cursor:pointer}
@@ -345,10 +346,11 @@ main{flex:1;display:flex;flex-direction:column;max-width:820px;
 <!-- ════════════════ URL MODAL ════════════════ -->
 <div class="modal-bg" id="url-modal">
 <div class="modal">
-  <h2>Add by EMQ link</h2>
+  <h2>Add by Media URL</h2>
+  <div class="modal-note">Paste a direct link to an audio or video file (e.g. .mp3, .ogg, .webm). The system will try to fetch metadata from the EMQ database using your browser's session cookie.</div>
   <div class="modal-err" id="url-err"></div>
   <input type="text" class="modal-input" id="url-input"
-    placeholder="https://erogemusicquiz.com/music/12345  or just  12345">
+    placeholder="https://erogemusicquiz.com/selfhoststorage/userup/xxx.webm or paste any media URL">
   <div class="modal-btns">
     <button class="modal-cancel" id="url-cancel">Cancel</button>
     <button class="modal-ok" id="url-ok">Add</button>
@@ -709,20 +711,29 @@ function renderRanking(){
 //  VNDB COVER CACHE
 // ─────────────────────────────────────────────────────────────
 const coverCache=new Map();
+
+// Extract numeric ID from VNDB vid field (e.g., "v87" -> 87)
+function extractVndbId(vid){
+  if(!vid) return null;
+  const m = vid.match(/^v?(\d+)$/i);
+  return m ? parseInt(m[1]) : null;
+}
+
 async function getCover(vndbId){
-  if(!vndbId) return null;
-  if(coverCache.has(vndbId)) return coverCache.get(vndbId);
+  const id = extractVndbId(vndbId);
+  if(!id) return null;
+  if(coverCache.has(id)) return coverCache.get(id);
   try{
     const res=await fetch('https://api.vndb.org/kana/vn',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({filters:['id','=',vndbId],fields:'image.url,image.sexual'})
+      body:JSON.stringify({filters:['id','=',id],fields:'image.url,image.sexual'})
     });
-    if(!res.ok) throw new Error();
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const d=await res.json();
     const url=d.results?.[0]?.image?.url;
     const img=url?await loadImage(url):null;
-    coverCache.set(vndbId,img); return img;
-  }catch(e){ coverCache.set(vndbId,null); return null; }
+    coverCache.set(id,img); return img;
+  }catch(e){ coverCache.set(id,null); return null; }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -756,17 +767,36 @@ async function generateVideo(){
   };
   const prog=(p,s)=>{ $('vm-bar').style.width=Math.round(p*100)+'%'; $('vm-status').textContent=s; };
 
-  // Pre-fetch covers
-  log('▶ Fetching cover art…');
+  // Pre-fetch covers and detect media types
+  log('▶ Fetching cover art and analyzing media…');
   const covers=new Map();
+  const mediaTypes=new Map(); // song.id -> 'video' | 'audio' | null
+  
   for(let i=0;i<entries.length;i++){
     if(cancelEnc) return;
-    const {song}=entries[i];
-    const img=song.vid?await getCover(song.vid):null;
-    covers.set(song.id,img);
-    if(img) log(`  ✓ ${song.gt||song.t}`, 'ok');
-    else log(`  – ${song.gt||song.t}: no cover`);
-    prog(0.12*(i+1)/entries.length,`Cover art ${i+1}/${entries.length}`);
+    const {song,localFile}=entries[i];
+    
+    // Determine media type from URL extension or local file
+    let isVideo = false;
+    if(localFile){
+      const ext = localFile.name.split('.').pop().toLowerCase();
+      isVideo = ['webm','mp4','avi','mkv','mov'].includes(ext);
+    } else if(song.au){
+      const ext = song.au.split('?')[0].split('.').pop().toLowerCase();
+      isVideo = ['webm','mp4','avi','mkv','mov'].includes(ext);
+    }
+    mediaTypes.set(song.id, isVideo ? 'video' : 'audio');
+    
+    // Only fetch cover for audio tracks (video uses its own frames)
+    if(!isVideo && song.vid){
+      const img=await getCover(song.vid);
+      covers.set(song.id,img);
+      if(img) log(`  ✓ ${song.gt||song.t}`, 'ok');
+      else log(`  – ${song.gt||song.t}: no cover`);
+    } else if(isVideo){
+      log(`  🎬 ${song.gt||song.t}: video file`);
+    }
+    prog(0.12*(i+1)/entries.length,`Analyzing ${i+1}/${entries.length}`);
     await yield_();
   }
 
@@ -789,6 +819,7 @@ async function generateVideo(){
     const {song,duration,startTime,localFile}=entries[i];
     const rank=dir==='asc'?total-i:i+1;
     const cover=covers.get(song.id)||null;
+    const mediaType=mediaTypes.get(song.id);
 
     prog(0.12+0.83*(i/total),`[${i+1}/${total}] ${song.t}`);
     log(`▶ #${rank} ${song.t}`);
@@ -819,14 +850,24 @@ async function generateVideo(){
       log(`  – no audio`);
     }
 
-    await animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTime);
+    // For video files, play the video on canvas with pillarboxing for 4:3
+    if(mediaType === 'video'){
+      const videoSrc = localFile ? URL.createObjectURL(localFile) : song.au;
+      await animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoSrc);
+      if(localFile) URL.revokeObjectURL(videoSrc);
+    } else {
+      await animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTime);
+    }
     if(audioSrc){ try{audioSrc.stop();}catch(e){} }
   }
 
-  // Black fade out
-  for(let f=0;f<Math.round(fps*0.4);f++){
-    const a=f/(fps*0.4);
-    drawFrame(ctx,vw,vh,null,null,null,null,1,1);
+  // Half-second fade out/in transition between songs
+  const fadeFrames = Math.round(fps * 0.5);
+  const lastSong = entries[i];
+  const lastCover = covers.get(lastSong.song.id)||null;
+  for(let f=0;f<fadeFrames;f++){
+    const a=f/fadeFrames;
+    drawFrame(ctx,vw,vh,lastSong.song,dir==='asc'?total-i:i+1,total,lastCover,a,lastSong.duration);
     ctx.fillStyle=`rgba(0,0,0,${a*a})`; ctx.fillRect(0,0,vw,vh);
     await sleep(1000/fps);
   }
@@ -859,6 +900,178 @@ async function animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTim
     }
     requestAnimationFrame(frame);
   });
+}
+
+// ─────────────────────────────────────────────────────────────
+//  VIDEO ANIMATION (for video files)
+// ─────────────────────────────────────────────────────────────
+async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl){
+  // Create video element and load it
+  const video = document.createElement('video');
+  video.crossOrigin = 'anonymous';
+  video.muted = true; // We use separate audio track
+  
+  // Load video from URL with credentials
+  try{
+    const res = await fetch(videoUrl, {credentials:'include'});
+    const blob = await res.blob();
+    video.src = URL.createObjectURL(blob);
+    await video.load();
+  }catch(e){
+    console.error('Failed to load video:', e);
+    // Fallback: just show static frame
+    return animateSong(ctx,vw,vh,song,rank,total,null,duration,fps,0);
+  }
+  
+  await video.play();
+  
+  const ms=duration*1000;
+  const t0=performance.now();
+  
+  // Calculate video dimensions for pillarboxing (80% width, maintain aspect ratio)
+  const videoAreaW = vw * 0.8;
+  const videoAreaH = vh * 0.8;
+  const videoAreaX = (vw - videoAreaW) / 2;
+  const videoAreaY = (vh - videoAreaH) / 2;
+  
+  return new Promise(res=>{
+    let last=t0;
+    const interval=1000/fps-2;
+    
+    function frame(){
+      if(cancelEnc){
+        video.pause();
+        URL.revokeObjectURL(video.src);
+        res();
+        return;
+      }
+      const now=performance.now();
+      const el=now-t0;
+      if(el>=ms){
+        video.pause();
+        URL.revokeObjectURL(video.src);
+        res();
+        return;
+      }
+      if(now-last>=interval){
+        last=now;
+        drawVideoFrame(ctx,vw,vh,video,videoAreaX,videoAreaY,videoAreaW,videoAreaH,song,rank,total,el/ms,duration);
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// Draw video frame with pillarboxing and overlay info
+function drawVideoFrame(ctx,vw,vh,video,x,y,w,h,song,rank,total,progress,duration){
+  // Clear and fill background black
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,vw,vh);
+  
+  // Calculate video display size maintaining aspect ratio (pillarbox for 4:3)
+  const vidAR = video.videoWidth / video.videoHeight;
+  const areaAR = w / h;
+  let drawW, drawH, drawX, drawY;
+  
+  if(vidAR < areaAR){
+    // Video is narrower (e.g., 4:3 in 16:9 area) - pillarbox
+    drawH = h;
+    drawW = h * vidAR;
+    drawX = x + (w - drawW) / 2;
+    drawY = y;
+  } else {
+    // Video is wider or same - letterbox or fit
+    drawW = w;
+    drawH = w / vidAR;
+    drawX = x;
+    drawY = y + (h - drawH) / 2;
+  }
+  
+  // Draw video
+  ctx.drawImage(video, drawX, drawY, drawW, drawH);
+  
+  // Dark gradient overlay on left side for text readability
+  const lg=ctx.createLinearGradient(0,0,vw*0.35,0);
+  lg.addColorStop(0,'rgba(8,8,14,0.95)');
+  lg.addColorStop(1,'rgba(8,8,14,0)');
+  ctx.fillStyle=lg;
+  ctx.fillRect(0,0,vw*0.35,vh);
+  
+  if(!song) return;
+  
+  const type=song.st||0;
+  const typeLabel=TYPE_LABEL[type]||'?';
+  const typeColor=TYPE_COLOR[type]||'#888';
+  
+  // Left panel info
+  const padL=vw*0.03, padV=vh*0.12;
+  let iy=padV+40;
+  
+  // Type badge
+  const tBW=typeLabel.length*11+28, tBH=38;
+  rRect(ctx,padL,iy,tBW,tBH,6);
+  ctx.fillStyle=typeColor+'28'; ctx.fill();
+  ctx.strokeStyle=typeColor+'60'; ctx.lineWidth=1; ctx.stroke();
+  ctx.fillStyle=typeColor;
+  ctx.font=`800 15px 'Syne',sans-serif`;
+  ctx.textBaseline='middle'; ctx.textAlign='left';
+  ctx.fillText(typeLabel.toUpperCase(), padL+14, iy+tBH/2);
+  iy+=tBH+22;
+  
+  // Song title
+  ctx.fillStyle='#ffffff';
+  ctx.textBaseline='alphabetic';
+  const infoW=vw*0.28;
+  const tsize=Math.max(24,Math.min(48,Math.floor(1200/Math.max(song.t.length,6))));
+  ctx.font=`700 ${tsize}px 'Syne',sans-serif`;
+  iy+=wrapText(ctx,song.t,padL,iy,infoW,tsize+8,2);
+  
+  // Japanese title
+  if(song.tj && song.tj!==song.t){
+    iy+=6;
+    ctx.fillStyle='rgba(255,255,255,0.45)';
+    ctx.font=`400 18px 'Shippori Mincho B1',serif`;
+    wrapText(ctx,song.tj,padL,iy,infoW,26,1);
+    iy+=30;
+  } else { iy+=10; }
+  
+  // Divider
+  iy+=14;
+  ctx.fillStyle='rgba(255,255,255,0.1)';
+  ctx.fillRect(padL,iy,Math.min(150,infoW*0.3),1.5);
+  iy+=18;
+  
+  // Game title
+  ctx.fillStyle='rgba(255,255,255,0.78)';
+  ctx.font=`500 18px 'Syne',sans-serif`;
+  wrapText(ctx,song.gt||'Unknown',padL,iy,infoW,26,1);
+  iy+=32;
+  
+  // Rank number (top-right corner of video area)
+  const rkSize=Math.round(vw*0.04);
+  ctx.font=`900 ${rkSize}px 'DM Mono',monospace`;
+  ctx.fillStyle=typeColor;
+  ctx.textBaseline='top';
+  ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=15;
+  ctx.fillText('#'+rank, vw-padL-rkSize*1.5, padV);
+  ctx.shadowBlur=0;
+  
+  // Progress bar at bottom
+  const barY=vh-32, barH=4;
+  ctx.fillStyle='rgba(255,255,255,0.08)';
+  ctx.fillRect(vw*0.1,barY,vw*0.8,barH);
+  ctx.fillStyle=typeColor;
+  ctx.fillRect(vw*0.1,barY,vw*0.8*progress,barH);
+  
+  // Timer
+  const rem=Math.ceil(duration*(1-progress));
+  const mm=Math.floor(rem/60), ss=String(rem%60).padStart(2,'0');
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.font=`400 14px 'DM Mono',monospace`;
+  ctx.textBaseline='middle'; ctx.textAlign='right';
+  ctx.fillText(`${mm}:${ss}`,vw*0.9,barY+barH/2);
+  ctx.textAlign='left';
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1072,13 +1285,45 @@ function bindEvents(){
   // URL add
   $('url-btn').addEventListener('click',()=>{ $('url-modal').classList.add('open'); $('url-input').focus(); });
   $('url-cancel').addEventListener('click',()=>closeUrlModal());
-  $('url-ok').addEventListener('click',()=>{
+  $('url-ok').addEventListener('click',async ()=>{
     const raw=$('url-input').value.trim();
-    const m=raw.match(/(\d+)/);
-    if(!m){ showUrlErr('Enter an EMQ music URL or numeric ID'); return; }
-    const song=songIdx?.get(m[1]);
-    if(!song){ showUrlErr(`ID ${m[1]} not found in database`); return; }
-    addSong(song); closeUrlModal();
+    if(!raw){ showUrlErr('Please enter a URL'); return; }
+    
+    // Try to extract EMQ storage URL pattern or any media URL
+    const emqMatch = raw.match(/erogemusicquiz\.com\/(?:selfhoststorage\/[^\/]+\/|catbox\/)([a-f0-9-]+\.(?:webm|mp3|ogg|mp4|wav|m4a))/i);
+    const idMatch = raw.match(/\/music\/(\d+)/i);
+    const justId = raw.match(/^(\d+)$/);
+    
+    let song = null;
+    let mediaUrl = raw;
+    
+    // Case 1: Direct EMQ storage URL - search db for matching audio URL
+    if(emqMatch){
+      const filename = emqMatch[1].toLowerCase();
+      song = songArr.find(s => s.au && s.au.toLowerCase().includes(filename));
+      if(!song){
+        // Create placeholder song with URL as audio source
+        song = { id: 'url_'+Date.now(), t: 'Custom Media', tj: '', gt: 'Unknown', st: 0, vid: null, au: raw, ar: [] };
+      }
+    }
+    // Case 2: EMQ music page URL or just ID - lookup in db
+    else if(idMatch || justId){
+      const id = (idMatch || justId)[1];
+      song = songIdx?.get(id);
+      if(!song){ showUrlErr(`ID ${id} not found in database`); return; }
+    }
+    // Case 3: Other URL - try to fetch and match, or create placeholder
+    else {
+      // Try to find song by matching URL against all audio URLs
+      song = songArr.find(s => s.au === raw);
+      if(!song){
+        // Create placeholder - user can edit metadata later if needed
+        song = { id: 'url_'+Date.now(), t: 'Custom Media', tj: '', gt: 'Unknown', st: 0, vid: null, au: raw, ar: [] };
+      }
+    }
+    
+    addSong(song);
+    closeUrlModal();
   });
   $('url-input').addEventListener('keydown',e=>{ if(e.key==='Enter') $('url-ok').click(); });
   function closeUrlModal(){ $('url-modal').classList.remove('open'); $('url-input').value=''; $('url-err').style.display='none'; }
