@@ -80,7 +80,7 @@ header{height:52px;display:flex;align-items:center;gap:10px;padding:0 20px;
 .btn-sm{padding:4px 10px;font-size:11px}
 
 /* ─── MAIN LAYOUT ─── */
-main{flex:1;display:flex;flex-direction:column;max-width:820px;
+main{flex:1;display:flex;flex-direction:column;max-width:1400px;
   width:100%;margin:0 auto;padding:24px 20px 100px}
 
 /* ─── SEARCH ROW ─── */
@@ -138,7 +138,7 @@ main{flex:1;display:flex;flex-direction:column;max-width:820px;
 .empty-icon{font-size:32px;margin-bottom:10px;opacity:.35;display:block}
 
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);
-  padding:12px 14px;display:grid;grid-template-columns:44px 1fr auto;gap:10px;
+  padding:14px 16px;display:grid;grid-template-columns:50px minmax(0,1fr) auto;gap:14px;
   align-items:start;cursor:grab;user-select:none;
   transition:border-color .15s,transform .1s}
 .card:active{cursor:grabbing}
@@ -150,27 +150,27 @@ main{flex:1;display:flex;flex-direction:column;max-width:820px;
   text-align:right;padding-top:3px;line-height:1;font-weight:500}
 .card-rank.top{color:var(--accent);font-size:24px;font-weight:700}
 
-.card-body{min-width:0;display:flex;flex-direction:column;gap:3px}
-.card-t{font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.card-tj{font-family:var(--serif);font-size:12px;color:var(--muted);
+.card-body{min-width:0;display:flex;flex-direction:column;gap:4px}
+.card-t{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-tj{font-family:var(--serif);font-size:13px;color:var(--muted);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px}
-.card-game{font-size:12px;color:var(--muted)}
-.card-artists{font-size:11px;color:var(--muted2);margin-top:1px}
+.card-game{font-size:13px;color:var(--muted)}
+.card-artists{font-size:12px;color:var(--muted2);margin-top:1px;line-height:1.4}
 
-.card-clip{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}
-.clip-label{font-size:11px;color:var(--muted2)}
-.clip-input{width:50px;padding:3px 7px;background:var(--surface2);
+.card-clip{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.clip-label{font-size:12px;color:var(--muted2)}
+.clip-input{width:56px;padding:4px 8px;background:var(--surface2);
   border:1px solid var(--border);border-radius:5px;
-  font-family:var(--mono);font-size:12px;color:var(--text);text-align:right}
+  font-family:var(--mono);font-size:13px;color:var(--text);text-align:right}
 .clip-input:focus{border-color:var(--accent)}
-.clip-sep{color:var(--muted2);font-size:11px}
+.clip-sep{color:var(--muted2);font-size:12px}
 
-.card-audio{display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap}
-.audio-ok{font-size:11px;color:var(--green)}
-.audio-miss{font-size:11px;color:var(--muted2)}
-.audio-local{font-size:11px;color:var(--accent)}
-.upload-btn{font-size:11px;padding:2px 7px;border-radius:var(--rnd);
+.card-audio{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap}
+.audio-ok{font-size:12px;color:var(--green)}
+.audio-miss{font-size:12px;color:var(--muted2)}
+.audio-local{font-size:12px;color:var(--accent)}
+.upload-btn{font-size:12px;padding:3px 9px;border-radius:var(--rnd);
   background:var(--surface2);border:1px solid var(--border);color:var(--muted);
   cursor:pointer;transition:all .12s}
 .upload-btn:hover{border-color:var(--accent);color:var(--accent)}
@@ -347,10 +347,10 @@ main{flex:1;display:flex;flex-direction:column;max-width:820px;
 <div class="modal-bg" id="url-modal">
 <div class="modal">
   <h2>Add by Media URL</h2>
-  <div class="modal-note">Paste a direct link to an audio or video file (e.g. .mp3, .ogg, .webm). The system will try to fetch metadata from the EMQ database using your browser's session cookie.</div>
+  <div class="modal-note">Paste a direct link to an audio or video file (e.g. .mp3, .ogg, .webm, .mp4). The system will try to fetch metadata from the EMQ database using your browser's session cookie.</div>
   <div class="modal-err" id="url-err"></div>
   <input type="text" class="modal-input" id="url-input"
-    placeholder="https://erogemusicquiz.com/selfhoststorage/userup/xxx.webm or paste any media URL">
+    placeholder="https://erogemusicquiz.com/selfhoststorage/xxx.webm or any media URL">
   <div class="modal-btns">
     <button class="modal-cancel" id="url-cancel">Cancel</button>
     <button class="modal-ok" id="url-ok">Add</button>
@@ -859,17 +859,19 @@ async function generateVideo(){
       await animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTime);
     }
     if(audioSrc){ try{audioSrc.stop();}catch(e){} }
-  }
-
-  // Half-second fade out/in transition between songs
-  const fadeFrames = Math.round(fps * 0.5);
-  const lastSong = entries[i];
-  const lastCover = covers.get(lastSong.song.id)||null;
-  for(let f=0;f<fadeFrames;f++){
-    const a=f/fadeFrames;
-    drawFrame(ctx,vw,vh,lastSong.song,dir==='asc'?total-i:i+1,total,lastCover,a,lastSong.duration);
-    ctx.fillStyle=`rgba(0,0,0,${a*a})`; ctx.fillRect(0,0,vw,vh);
-    await sleep(1000/fps);
+    
+    // Half-second fade out/in transition between songs (except last)
+    if(i < entries.length - 1){
+      const fadeFrames = Math.round(fps * 0.5);
+      const nextEntry = entries[i + 1];
+      const nextCover = covers.get(nextEntry.song.id)||null;
+      for(let f=0;f<fadeFrames;f++){
+        const a=f/fadeFrames;
+        drawFrame(ctx,vw,vh,song,rank,total,cover,1-a,duration);
+        ctx.fillStyle=`rgba(0,0,0,${a*a})`; ctx.fillRect(0,0,vw,vh);
+        await sleep(1000/fps);
+      }
+    }
   }
 
   recorder.stop();
@@ -963,40 +965,47 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl){
   });
 }
 
-// Draw video frame with pillarboxing and overlay info
+// Draw video frame with pillarboxing and overlay info (80% width for video, 20% for metadata)
 function drawVideoFrame(ctx,vw,vh,video,x,y,w,h,song,rank,total,progress,duration){
   // Clear and fill background black
   ctx.fillStyle='#000';
   ctx.fillRect(0,0,vw,vh);
   
+  // Video area: 80% of screen width, centered vertically
+  const videoAreaW = vw * 0.8;
+  const videoAreaH = vh;
+  const videoAreaX = (vw - videoAreaW) / 2;
+  const videoAreaY = 0;
+  
   // Calculate video display size maintaining aspect ratio (pillarbox for 4:3)
   const vidAR = video.videoWidth / video.videoHeight;
-  const areaAR = w / h;
+  const areaAR = videoAreaW / videoAreaH;
   let drawW, drawH, drawX, drawY;
   
   if(vidAR < areaAR){
-    // Video is narrower (e.g., 4:3 in 16:9 area) - pillarbox
-    drawH = h;
-    drawW = h * vidAR;
-    drawX = x + (w - drawW) / 2;
-    drawY = y;
+    // Video is narrower (e.g., 4:3 in 16:9 area) - pillarbox on sides
+    drawH = videoAreaH;
+    drawW = videoAreaH * vidAR;
+    drawX = videoAreaX + (videoAreaW - drawW) / 2;
+    drawY = videoAreaY;
   } else {
-    // Video is wider or same - letterbox or fit
-    drawW = w;
-    drawH = w / vidAR;
-    drawX = x;
-    drawY = y + (h - drawH) / 2;
+    // Video is wider or same - letterbox top/bottom
+    drawW = videoAreaW;
+    drawH = videoAreaW / vidAR;
+    drawX = videoAreaX;
+    drawY = (vh - drawH) / 2;
   }
   
   // Draw video
   ctx.drawImage(video, drawX, drawY, drawW, drawH);
   
-  // Dark gradient overlay on left side for text readability
-  const lg=ctx.createLinearGradient(0,0,vw*0.35,0);
-  lg.addColorStop(0,'rgba(8,8,14,0.95)');
-  lg.addColorStop(1,'rgba(8,8,14,0)');
+  // Left panel (20% of screen) for metadata with dark gradient
+  const infoPanelW = vw * 0.2;
+  const lg=ctx.createLinearGradient(0,0,infoPanelW,0);
+  lg.addColorStop(0,'rgba(8,8,14,0.98)');
+  lg.addColorStop(1,'rgba(8,8,14,0.85)');
   ctx.fillStyle=lg;
-  ctx.fillRect(0,0,vw*0.35,vh);
+  ctx.fillRect(0,0,infoPanelW,vh);
   
   if(!song) return;
   
@@ -1004,73 +1013,73 @@ function drawVideoFrame(ctx,vw,vh,video,x,y,w,h,song,rank,total,progress,duratio
   const typeLabel=TYPE_LABEL[type]||'?';
   const typeColor=TYPE_COLOR[type]||'#888';
   
-  // Left panel info
-  const padL=vw*0.03, padV=vh*0.12;
-  let iy=padV+40;
+  // Left panel info (20% width panel)
+  const padL=vw*0.015, padV=vh*0.08;
+  const infoW=vw*0.17;  // Leave some margin
+  let iy=padV+30;
   
   // Type badge
-  const tBW=typeLabel.length*11+28, tBH=38;
+  const tBW=typeLabel.length*10+24, tBH=32;
   rRect(ctx,padL,iy,tBW,tBH,6);
   ctx.fillStyle=typeColor+'28'; ctx.fill();
   ctx.strokeStyle=typeColor+'60'; ctx.lineWidth=1; ctx.stroke();
   ctx.fillStyle=typeColor;
-  ctx.font=`800 15px 'Syne',sans-serif`;
+  ctx.font=`700 13px 'Syne',sans-serif`;
   ctx.textBaseline='middle'; ctx.textAlign='left';
-  ctx.fillText(typeLabel.toUpperCase(), padL+14, iy+tBH/2);
-  iy+=tBH+22;
+  ctx.fillText(typeLabel.toUpperCase(), padL+12, iy+tBH/2);
+  iy+=tBH+18;
   
   // Song title
   ctx.fillStyle='#ffffff';
   ctx.textBaseline='alphabetic';
-  const infoW=vw*0.28;
-  const tsize=Math.max(24,Math.min(48,Math.floor(1200/Math.max(song.t.length,6))));
+  const tsize=Math.max(18,Math.min(32,Math.floor(800/Math.max(song.t.length,6))));
   ctx.font=`700 ${tsize}px 'Syne',sans-serif`;
-  iy+=wrapText(ctx,song.t,padL,iy,infoW,tsize+8,2);
+  iy+=wrapText(ctx,song.t,padL,iy,infoW,tsize+6,3);
   
   // Japanese title
   if(song.tj && song.tj!==song.t){
-    iy+=6;
+    iy+=4;
     ctx.fillStyle='rgba(255,255,255,0.45)';
-    ctx.font=`400 18px 'Shippori Mincho B1',serif`;
-    wrapText(ctx,song.tj,padL,iy,infoW,26,1);
-    iy+=30;
-  } else { iy+=10; }
+    ctx.font=`400 14px 'Shippori Mincho B1',serif`;
+    wrapText(ctx,song.tj,padL,iy,infoW,20,1);
+    iy+=22;
+  } else { iy+=8; }
   
   // Divider
-  iy+=14;
+  iy+=10;
   ctx.fillStyle='rgba(255,255,255,0.1)';
-  ctx.fillRect(padL,iy,Math.min(150,infoW*0.3),1.5);
-  iy+=18;
+  ctx.fillRect(padL,iy,Math.min(100,infoW*0.4),1.5);
+  iy+=14;
   
   // Game title
   ctx.fillStyle='rgba(255,255,255,0.78)';
-  ctx.font=`500 18px 'Syne',sans-serif`;
-  wrapText(ctx,song.gt||'Unknown',padL,iy,infoW,26,1);
-  iy+=32;
+  ctx.font=`500 14px 'Syne',sans-serif`;
+  wrapText(ctx,song.gt||'Unknown',padL,iy,infoW,20,2);
+  iy+=26;
   
-  // Rank number (top-right corner of video area)
-  const rkSize=Math.round(vw*0.04);
+  // Rank number (bottom-left of info panel)
+  const rkSize=Math.round(vw*0.035);
   ctx.font=`900 ${rkSize}px 'DM Mono',monospace`;
   ctx.fillStyle=typeColor;
-  ctx.textBaseline='top';
+  ctx.textBaseline='bottom';
   ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=15;
-  ctx.fillText('#'+rank, vw-padL-rkSize*1.5, padV);
+  ctx.fillText('#'+rank, padL+4, vh-padV);
   ctx.shadowBlur=0;
   
-  // Progress bar at bottom
-  const barY=vh-32, barH=4;
+  // Progress bar at bottom (full width)
+  const barY=vh-28, barH=4;
   ctx.fillStyle='rgba(255,255,255,0.08)';
-  ctx.fillRect(vw*0.1,barY,vw*0.8,barH);
+  ctx.fillRect(0,barY,vw,barH);
   ctx.fillStyle=typeColor;
-  ctx.fillRect(vw*0.1,barY,vw*0.8*progress,barH);
+  ctx.fillRect(0,barY,vw*progress,barH);
   
   // Timer
   const rem=Math.ceil(duration*(1-progress));
   const mm=Math.floor(rem/60), ss=String(rem%60).padStart(2,'0');
   ctx.fillStyle='rgba(255,255,255,0.5)';
-  ctx.font=`400 14px 'DM Mono',monospace`;
+  ctx.font=`400 13px 'DM Mono',monospace`;
   ctx.textBaseline='middle'; ctx.textAlign='right';
-  ctx.fillText(`${mm}:${ss}`,vw*0.9,barY+barH/2);
+  ctx.fillText(`${mm}:${ss}`,vw-12,barY+barH/2);
   ctx.textAlign='left';
 }
 
@@ -1297,7 +1306,13 @@ function bindEvents(){
     let song = null;
     let mediaUrl = raw;
     
-    // Case 1: Direct EMQ storage URL - search db for matching audio URL
+    // Helper: check if URL is video based on extension
+    const isVideoUrl = (url) => {
+      const ext = url.split('?')[0].split('.').pop().toLowerCase();
+      return ['webm','mp4','avi','mkv','mov'].includes(ext);
+    };
+    
+    // Case 1: Direct EMQ storage URL - search db for matching audio/video URL
     if(emqMatch){
       const filename = emqMatch[1].toLowerCase();
       song = songArr.find(s => s.au && s.au.toLowerCase().includes(filename));
@@ -1312,9 +1327,8 @@ function bindEvents(){
       song = songIdx?.get(id);
       if(!song){ showUrlErr(`ID ${id} not found in database`); return; }
     }
-    // Case 3: Other URL - try to fetch and match, or create placeholder
+    // Case 3: Other URL - try to find song by matching URL against all audio URLs
     else {
-      // Try to find song by matching URL against all audio URLs
       song = songArr.find(s => s.au === raw);
       if(!song){
         // Create placeholder - user can edit metadata later if needed

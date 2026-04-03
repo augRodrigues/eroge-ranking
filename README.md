@@ -52,12 +52,12 @@ In your repo → Settings → Pages → deploy from `main` / root.
 | Feature | Details |
 |---|---|
 | Search | Multi-term; searches title (JP+latin), game, artists |
-| Add by URL | Paste EMQ link or just the numeric ID |
+| Add by URL | Paste direct media URLs (.webm, .mp4, .mp3, .ogg) or EMQ links; auto-detects video vs audio |
 | Drag reorder | Full drag-and-drop |
 | ↑↓ buttons | For precision reorder |
 | Clip duration | Per-song, with "Apply to all" global default |
 | Start offset | Skip intros — e.g. start at 10s |
-| Local audio upload | Per-song fallback when EMQ audio fails |
+| Local upload | Per-song fallback for audio/video files |
 | Save/Load | Export ranking as JSON, reload later |
 | Session restore | Ranking survives page refresh (sessionStorage) |
 
@@ -68,8 +68,9 @@ In your repo → Settings → Pages → deploy from `main` / root.
 - **Format**: WebM (VP9 + Opus) — directly uploadable to YouTube
 - **Encoding**: Real-time in-browser using Canvas + MediaRecorder
 - **Duration**: Equal to sum of all clip lengths (e.g. 300 songs × 30s = 150 min)
+- **Transitions**: 0.5s fade between songs
 
-### What each frame shows
+### Layout for audio tracks
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -90,13 +91,26 @@ In your repo → Settings → Pages → deploy from `main` / root.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Cover art is fetched from the **VNDB API** (public, no auth needed).
+### Layout for video tracks
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ INFO │                                                       │
+│      │                                                       │
+│ 20%  │                   VIDEO (80%)                         │
+│panel │          pillarboxed for 4:3 content                  │
+│      │                                                       │
+│ #42  │                                                       │
+│      │                                                       │
+│███████████████████████████████████████████████████  0:18     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Video content fills 80% of the screen width, with metadata displayed in a 20% left panel. 4:3 videos automatically get black pillarbars on the sides.
 
 ### Audio
 
-The tool fetches audio directly from EMQ. Since EMQ requires login, **be logged into erogemusicquiz.com in the same browser** before encoding — the browser sends your session cookie automatically.
-
-If audio fetch fails (CORS or auth issue), use the **"📁 Upload local"** button on each song card to provide an audio file you downloaded manually.
+The tool fetches audio/video directly from EMQ using your browser's session cookie. **Be logged into erogemusicquiz.com** before encoding. If fetch fails, use **"📁 Upload local"** per song.
 
 ---
 
