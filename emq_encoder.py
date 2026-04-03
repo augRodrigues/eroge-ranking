@@ -298,7 +298,7 @@ class VideoEncoder:
                         "-i", local_path,
                         "-ss", str(entry.start_time),
                         "-t", str(entry.duration),
-                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=decrease,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
                         "-c:v", self.project.config.codec,
                         "-preset", "ultrafast",
                         "-crf", str(self.project.config.crf),
@@ -328,7 +328,7 @@ class VideoEncoder:
                             "-i", downloaded,
                             "-ss", str(entry.start_time),
                             "-t", str(entry.duration),
-                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=decrease,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
                             "-c:v", self.project.config.codec,
                             "-preset", "ultrafast",
                             "-crf", str(self.project.config.crf),
@@ -354,7 +354,7 @@ class VideoEncoder:
                             "-i", video_path,
                             "-ss", str(entry.start_time),
                             "-t", str(entry.duration),
-                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=decrease,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
                             "-c:v", self.project.config.codec,
                             "-preset", "ultrafast",
                             "-crf", str(self.project.config.crf),
@@ -743,6 +743,10 @@ def load_ranking_json(json_path: str) -> EncodingProject:
         if local_file:
             ext = local_file.split('.')[-1].lower() if '.' in local_file else ''
             is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
+        # Check videoFile extension
+        elif video_url:
+            ext = video_url.split('?')[0].split('.')[-1].lower()
+            is_video = ext in ['webm', 'mp4', 'avi', 'mkv', 'mov']
         # Check URL extension
         elif audio_url:
             ext = audio_url.split('?')[0].split('.')[-1].lower()
@@ -758,9 +762,9 @@ def load_ranking_json(json_path: str) -> EncodingProject:
             song_type=song.get("st", 0),
             duration=entry.get("duration", 15.0),
             start_time=entry.get("startTime", 0.0),
-            local_file=local_file,
+            local_file=local_file if is_video else local_file,  # Keep local_file for video files
             audio_url=audio_url if not is_video else None,  # Don't use audio_url for video files
-            video_url=video_url or (local_file if is_video else None) or (audio_url if is_video else None),  # Use local_file for video files, fallback to audio_url
+            video_url=video_url or (local_file if is_video else None) or (audio_url if is_video else None),  # Use videoFile first, then local_file for video files, fallback to audio_url
             vndb_id=song.get("vid"),
             cover_file=entry.get("coverFile"),
             is_video=is_video,
