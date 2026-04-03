@@ -1,1 +1,8 @@
-(index.html is a source file, and there are no build artifacts, dependencies, or temp files in the changes)
+```
+# Test files and artifacts
+test_*.json
+test_*.png
+test_*.mp4
+test_*.sh
+sample_*.json
+```

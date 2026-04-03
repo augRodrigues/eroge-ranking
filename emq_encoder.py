@@ -77,6 +77,7 @@ class ColorPalette:
         2: ("#3ecfac", "rgba(62,207,172,0.15)"),    # ED
         3: ("#6ba4f5", "rgba(107,164,245,0.15)"),   # Insert
         4: ("#a48ef8", "rgba(164,142,248,0.15)"),   # BGM
+        600: ("#f07070", "rgba(240,112,112,0.15)"), # Vocal/Character Song
     }
     
     TYPE_LABELS = {
@@ -85,6 +86,7 @@ class ColorPalette:
         2: "ED", 
         3: "INSERT",
         4: "BGM",
+        600: "VOCAL",
     }
 
 
@@ -168,28 +170,34 @@ class VideoEncoder:
         """Prepare audio file for a song entry"""
         output_path = os.path.join(self.temp_dir, f"audio_{index:04d}.wav")
         
-        # Try local file first
-        if entry.local_file and os.path.exists(entry.local_file):
-            try:
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", entry.local_file,
-                    "-ss", str(entry.start_time),
-                    "-t", str(entry.duration),
-                    "-ar", str(self.project.config.audio_sample_rate),
-                    "-ac", "2",
-                    "-vn",
-                    output_path
-                ]
-                if self.verbose:
-                    self.log(f"Processing local audio: {entry.local_file}")
-                subprocess.run(cmd, capture_output=True, check=True)
-                return output_path
-            except subprocess.CalledProcessError as e:
-                self.log(f"Failed to process local audio: {e}", "ERROR")
+        # Try local file first - check in current directory if only filename provided
+        if entry.local_file:
+            local_path = entry.local_file
+            # If it's just a filename (no path), look in current directory
+            if not os.path.exists(local_path):
+                local_path = os.path.join(os.getcwd(), entry.local_file)
+            
+            if os.path.exists(local_path):
+                try:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", local_path,
+                        "-ss", str(entry.start_time),
+                        "-t", str(entry.duration),
+                        "-ar", str(self.project.config.audio_sample_rate),
+                        "-ac", "2",
+                        "-vn",
+                        output_path
+                    ]
+                    if self.verbose:
+                        self.log(f"Processing local audio: {local_path}")
+                    subprocess.run(cmd, capture_output=True, check=True)
+                    return output_path
+                except subprocess.CalledProcessError as e:
+                    self.log(f"Failed to process local audio: {e}", "ERROR")
                 
         # Try downloaded/cached audio
-        elif entry.audio_url:
+        if entry.audio_url:
             downloaded = os.path.join(self.temp_dir, f"downloaded_{index:04d}.tmp")
             if self.download_audio(entry, downloaded):
                 try:

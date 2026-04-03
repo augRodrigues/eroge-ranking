@@ -627,6 +627,7 @@ function exportForPythonEncoder(){
       },
       duration: r.duration,
       startTime: r.startTime,
+      // For local files, just use the filename - encoder will look in same directory
       localFile: r.localFile ? r.localFile.name : null,
       coverFile: null // Cover is fetched from VNDB by encoder
     };
