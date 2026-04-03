@@ -182,6 +182,8 @@ class VideoEncoder:
             
             if os.path.exists(local_path):
                 try:
+                    # Use absolute path to ensure FFmpeg treats it as a local file
+                    local_path = os.path.abspath(local_path)
                     cmd = [
                         "ffmpeg", "-y",
                         "-i", local_path,
@@ -198,6 +200,8 @@ class VideoEncoder:
                     return output_path
                 except subprocess.CalledProcessError as e:
                     self.log(f"Failed to process local audio: {e}", "ERROR")
+                    if self.verbose and e.stderr:
+                        self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
                 
         # Try downloaded/cached audio
         if entry.audio_url:
@@ -283,12 +287,14 @@ class VideoEncoder:
             
             if os.path.exists(local_path):
                 try:
+                    # Use absolute path to ensure FFmpeg treats it as a local file
+                    local_path = os.path.abspath(local_path)
                     cmd = [
                         "ffmpeg", "-y",
                         "-i", local_path,
                         "-ss", str(entry.start_time),
                         "-t", str(entry.duration),
-                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=keep,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
                         "-c:v", self.project.config.codec,
                         "-preset", "ultrafast",
                         "-crf", str(self.project.config.crf),
@@ -302,6 +308,8 @@ class VideoEncoder:
                     return output_path
                 except subprocess.CalledProcessError as e:
                     self.log(f"Failed to process local video: {e}", "ERROR")
+                    if self.verbose and e.stderr:
+                        self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
         
         # Try downloaded video from URL
         if entry.video_url:
@@ -488,15 +496,19 @@ class VideoEncoder:
         n_segments = len(self.segment_files)
         transition_dur = self.project.config.transition_duration
         
+        # Check if all segments are video (have embedded audio)
+        all_video = all(e.is_video for e in self.project.entries)
+        
         # Build inputs list for video segments
         inputs = []
         for seg in self.segment_files:
             inputs.extend(["-i", seg])
         
-        # Add audio files as inputs
+        # Add audio files as inputs only if not all video
         audio_inputs = []
-        for i, audio in enumerate(self.audio_files):
-            audio_inputs.extend(["-i", audio])
+        if not all_video and self.audio_files:
+            for i, audio in enumerate(self.audio_files):
+                audio_inputs.extend(["-i", audio])
         
         all_inputs = inputs + audio_inputs
         
@@ -523,28 +535,55 @@ class VideoEncoder:
         
         final_video = f"v{n_segments-2}"
         
-        # Build acrossfade chain for audio (if we have audio files)
-        has_audio = len(self.audio_files) > 0
+        # Build acrossfade chain for audio
+        # For all-video entries, extract and crossfade audio from video streams
+        # For mixed or audio-only, use separate audio files
+        has_audio = all_video or (len(self.audio_files) > 0)
         audio_filter = ""
+        
         if has_audio:
-            audio_start_idx = n_segments  # Audio inputs start after video inputs
-            if len(self.audio_files) == 1:
-                audio_filter = f"[{audio_start_idx}:a]anull[outa]"
-            else:
-                # First crossfade
-                audio_parts = []
-                audio_parts.append(
-                    f"[{audio_start_idx}:a][{audio_start_idx+1}:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a0]"
-                )
-                
-                # Chain remaining audio files
-                for i in range(2, len(self.audio_files)):
+            if all_video:
+                # All segments have embedded audio - crossfade the audio streams from video
+                audio_start_idx = 0  # Audio is in the same inputs as video
+                if n_segments == 1:
+                    audio_filter = f"[0:a]anull[outa]"
+                elif n_segments == 2:
+                    audio_filter = f"[0:a][1:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[outa]"
+                else:
+                    # First crossfade
+                    audio_parts = []
                     audio_parts.append(
-                        f"[a{i-2}][{audio_start_idx+i}:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a{i-1}]"
+                        f"[0:a][1:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a0]"
                     )
-                
-                final_audio = f"a{len(self.audio_files)-2}"
-                audio_filter = ";".join(audio_parts) + f";[{final_audio}]anormalize[outa]"
+                    
+                    # Chain remaining audio streams
+                    for i in range(2, n_segments):
+                        audio_parts.append(
+                            f"[a{i-2}][{i}:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a{i-1}]"
+                        )
+                    
+                    final_audio = f"a{n_segments-2}"
+                    audio_filter = ";".join(audio_parts) + f";[{final_audio}]anormalize[outa]"
+            else:
+                # Mixed content or audio-only - use separate audio files
+                audio_start_idx = n_segments  # Audio inputs start after video inputs
+                if len(self.audio_files) == 1:
+                    audio_filter = f"[{audio_start_idx}:a]anull[outa]"
+                else:
+                    # First crossfade
+                    audio_parts = []
+                    audio_parts.append(
+                        f"[{audio_start_idx}:a][{audio_start_idx+1}:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a0]"
+                    )
+                    
+                    # Chain remaining audio files
+                    for i in range(2, len(self.audio_files)):
+                        audio_parts.append(
+                            f"[a{i-2}][{audio_start_idx+i}:a]acrossfade=d={transition_dur}:c1=tri:c2=tri[a{i-1}]"
+                        )
+                    
+                    final_audio = f"a{len(self.audio_files)-2}"
+                    audio_filter = ";".join(audio_parts) + f";[{final_audio}]anormalize[outa]"
         
         # Combine video and audio filters
         if has_audio:

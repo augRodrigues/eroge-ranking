@@ -272,8 +272,9 @@ When you upload local files in the browser:
 - The export includes only the filename (not full path)
 - Place these files in the **same directory** where you run `emq_encoder.py`
 - The encoder will automatically find them
-- For **video files** (webm, mp4, avi, mkv, mov), use the `"videoFile"` field
-- For **audio-only files** (mp3, ogg, wav, flac), use the `"localFile"` field
+- For **video files** (webm, mp4, avi, mkv, mov), set `"videoFile"` field
+- For **audio-only files** (mp3, ogg, wav, flac), set `"localFile"` field
+- The encoder converts relative filenames to absolute paths before passing to FFmpeg to avoid "unknown url type" errors
 
 ### Video files (with cinematics)
 
@@ -302,8 +303,10 @@ For eroge songs with video cinematics (like anime openings):
 |---------|-----|
 | `FFmpeg not found` | Install FFmpeg and ensure it's in your PATH |
 | `No audio available` | Check that local files are in the same directory, or verify URLs are accessible |
-| `Failed to process local audio` | Ensure the file format is supported by FFmpeg |
+| `Failed to process local audio/video` | Ensure the file format is supported by FFmpeg; check file path is correct |
+| `unknown url type: 'filename.webm'` | Make sure the file exists in the current directory; encoder now uses absolute paths |
 | Video has solid color background | This is intentional — background is generated from song type colors when no cover art is available |
+| No sound in video with multiple songs | Ensure all video entries have embedded audio; mixed video/audio content requires proper audio files |
 
 ---
 
