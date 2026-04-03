@@ -70,7 +70,7 @@ In your repo → Settings → Pages → deploy from `main` / root.
 - **Format**: WebM (VP9 + Opus) — directly uploadable to YouTube
 - **Encoding**: Real-time in-browser using Canvas + MediaRecorder
 - **Duration**: Equal to sum of all clip lengths (e.g. 300 songs × 30s = 150 min)
-- **Transitions**: 0.5s fade between songs
+- **Transitions**: 0.5s smooth crossfade between songs
 
 ### Layout for audio tracks
 
@@ -103,23 +103,25 @@ In your repo → Settings → Pages → deploy from `main` / root.
 │ 20%  │                   VIDEO (80%)                         │
 │panel │          pillarboxed for 4:3 content                  │
 │      │                                                       │
-│      │  Song Title                                           │
-│      │  Japanese Title                                       │
-│      │  Game Name                                            │
-│      │  Vocals:     Artist Name                              │
-│ #42  │  Composer:   Composer Name                            │
-│      │  Arranger:   Arranger Name                            │
-│      │  Lyrics:     Lyricist Name                            │
+│      │                                                       │
+│ Song │                                                       │
+│ Titl │                                                       │
+│ Game │                                                       │
+│ Voca │                                                       │
+│ Comp │                                                       │
+│ Arra │                                                       │
+│ Lyri │                                                       │
+│ #42  │                                                       │
 │      │                                                       │
 │███████████████████████████████████████████████████  0:18     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Video content fills 80% of the screen width, with metadata displayed in a 20% left panel. 4:3 videos automatically get black pillarbars on the sides. The info panel shows song title, game name, and all credited artists (vocals, composer, arranger, lyricist, etc.).
+Video content fills 80% of the screen width on the right side, with metadata displayed in a 20% left panel. The info panel is drawn first to prevent video overlap. 4:3 videos automatically get black pillarbars on the sides. The info panel shows song title, game name, and all credited artists (vocals, composer, arranger, lyricist, etc.).
 
-### Audio
+### Audio/Video Sync
 
-The tool fetches audio/video directly from EMQ using your browser's session cookie. **Be logged into erogemusicquiz.com** before encoding. If fetch fails, use **"📁 Upload local"** per song.
+The tool fetches audio/video directly from EMQ using your browser's session cookie. **Be logged into erogemusicquiz.com** before encoding. If fetch fails, use **"📁 Upload local"** per song. For video files, the start time offset is properly synchronized between audio and video tracks.
 
 ---
 

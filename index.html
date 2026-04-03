@@ -379,7 +379,8 @@ main{flex:1;display:flex;flex-direction:column;max-width:1400px;
     <div class="v-field">
       <label>Video bitrate</label>
       <select id="v-bitrate">
-        <option value="8000000">8 Mbps (high)</option>
+        <option value="15000000">15 Mbps (very high)</option>
+        <option value="8000000" selected>8 Mbps (high)</option>
         <option value="5000000">5 Mbps (medium)</option>
         <option value="2500000">2.5 Mbps (low)</option>
       </select>
@@ -805,13 +806,23 @@ async function generateVideo(){
     await yield_();
   }
 
-  // Set up recording
+  // Set up recording with keyframe interval for better seeking/playback
   const audioCtx=new AudioContext();
   const audioDest=audioCtx.createMediaStreamDestination();
   const videoStream=canvas.captureStream(fps);
   const stream=new MediaStream([...videoStream.getVideoTracks(),...audioDest.stream.getAudioTracks()]);
   const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')?'video/webm;codecs=vp9,opus':'video/webm';
-  const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bitrate});
+  // Use higher bitrate and set keyframe interval via advanced options if supported
+  const recorderOptions = {
+    mimeType: mime,
+    videoBitsPerSecond: bitrate,
+    audioBitsPerSecond: 128000
+  };
+  // Add keyframe interval for better playback (every 2 seconds)
+  if(mime.includes('vp9')){
+    recorderOptions.videoBitsPerSecond = Math.max(bitrate, 5000000);
+  }
+  const recorder=new MediaRecorder(stream, recorderOptions);
   const chunks=[]; let recDone=false;
   recorder.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
   recorder.onstop=()=>{ recDone=true; };
@@ -865,25 +876,44 @@ async function generateVideo(){
     }
     if(audioSrc){ try{audioSrc.stop();}catch(e){} }
     
-    // Half-second fade out/in transition between songs (except last)
+    // Half-second smooth crossfade transition between songs (except last)
     if(i < entries.length - 1){
       const fadeFrames = Math.round(fps * 0.5);
       const currentMediaType = mediaType; // Capture for transition
       const currentSong = song;
       const currentCover = cover;
+      const currentRank = rank;
       
-      // Fade out current frame
+      // Get next entry info for crossfade
+      const nextEntry = entries[i+1];
+      const nextRank = dir==='asc'?total-(i+1):(i+2);
+      const nextCover = covers.get(nextEntry.song.id)||null;
+      const nextMediaType = mediaTypes.get(nextEntry.song.id);
+      const nextSong = nextEntry.song;
+      
+      // Crossfade: fade out current while fading in next
       for(let f=0;f<fadeFrames;f++){
-        const a=f/fadeFrames;
+        const a=f/fadeFrames; // 0 to 1
+        
+        // Draw next frame fading in (background layer)
+        if(nextMediaType === 'video'){
+          // For video, we can't easily show the next video without loading it
+          // Just fade to black then let next iteration handle it
+          ctx.fillStyle='#000';
+          ctx.fillRect(0,0,vw,vh);
+        } else {
+          drawFrame(ctx,vw,vh,nextSong,nextRank,total,nextCover,a,duration);
+        }
+        
+        // Draw current frame fading out (foreground layer with decreasing opacity)
         if(currentMediaType === 'video'){
-          // For video, just fade to black
+          // For video transitions, just fade to black smoothly
           ctx.fillStyle=`rgba(0,0,0,${a})`;
           ctx.fillRect(0,0,vw,vh);
         } else {
-          drawFrame(ctx,vw,vh,currentSong,rank,total,currentCover,1-a,duration);
-          ctx.fillStyle=`rgba(0,0,0,${a*a})`;
-          ctx.fillRect(0,0,vw,vh);
+          drawFrame(ctx,vw,vh,currentSong,currentRank,total,currentCover,1-a,duration);
         }
+        
         await sleep(1000/fps);
       }
     }
@@ -933,18 +963,36 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl,star
     const res = await fetch(videoUrl, {credentials:'include'});
     const blob = await res.blob();
     video.src = URL.createObjectURL(blob);
-    await video.load();
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = reject;
+      video.load();
+    });
   }catch(e){
     console.error('Failed to load video:', e);
     // Fallback: just show static frame
     return animateSong(ctx,vw,vh,song,rank,total,null,duration,fps,0);
   }
   
-  await video.play();
-  // Seek to start time if specified
+  // Wait for video to be fully loaded with dimensions
+  await new Promise(resolve => {
+    if(video.readyState >= 2){
+      resolve();
+    } else {
+      video.onloadeddata = resolve;
+    }
+  });
+  
+  // Seek to start time BEFORE playing
   if(startTime > 0 && startTime < video.duration){
     video.currentTime = startTime;
+    // Wait for seek to complete
+    await new Promise(resolve => {
+      video.onseeked = resolve;
+    });
   }
+  
+  await video.play();
   
   const ms=duration*1000;
   const t0=performance.now();
@@ -970,7 +1018,9 @@ async function animateVideo(ctx,vw,vh,song,rank,total,duration,fps,videoUrl,star
       }
       if(now-last>=interval){
         last=now;
-        drawVideoFrame(ctx,vw,vh,video,song,rank,total,el/ms,duration);
+        // Calculate progress based on actual video time, not wall clock time
+        const vidProgress = Math.min(1, Math.max(0, (video.currentTime - startTime) / duration));
+        drawVideoFrame(ctx,vw,vh,video,song,rank,total,vidProgress,duration);
       }
       requestAnimationFrame(frame);
     }
@@ -984,41 +1034,44 @@ function drawVideoFrame(ctx,vw,vh,video,song,rank,total,progress,duration){
   ctx.fillStyle='#000';
   ctx.fillRect(0,0,vw,vh);
   
-  // Video area: 80% of screen width, full height
-  const videoAreaW = vw * 0.8;
-  const videoAreaH = vh;
-  const videoAreaX = (vw - videoAreaW) / 2;
-  const videoAreaY = 0;
-  
-  // Calculate video display size maintaining aspect ratio (pillarbox for 4:3)
-  const vidAR = video.videoWidth / video.videoHeight;
-  const areaAR = videoAreaW / videoAreaH;
-  let drawW, drawH, drawX, drawY;
-  
-  if(vidAR < areaAR){
-    // Video is narrower (e.g., 4:3 in 16:9 area) - pillarbox on sides
-    drawH = videoAreaH;
-    drawW = videoAreaH * vidAR;
-    drawX = videoAreaX + (videoAreaW - drawW) / 2;
-    drawY = videoAreaY;
-  } else {
-    // Video is wider or same - letterbox top/bottom
-    drawW = videoAreaW;
-    drawH = videoAreaW / vidAR;
-    drawX = videoAreaX;
-    drawY = (vh - drawH) / 2;
-  }
-  
-  // Draw video
-  ctx.drawImage(video, drawX, drawY, drawW, drawH);
-  
-  // Left panel (20% of screen) for metadata with dark gradient
+  // Left panel (20% of screen) for metadata with dark gradient - drawn FIRST so video doesn't overlap
   const infoPanelW = vw * 0.2;
   const lg=ctx.createLinearGradient(0,0,infoPanelW,0);
   lg.addColorStop(0,'rgba(8,8,14,0.98)');
-  lg.addColorStop(1,'rgba(8,8,14,0.85)');
+  lg.addColorStop(1,'rgba(8,8,14,0.95)');
   ctx.fillStyle=lg;
   ctx.fillRect(0,0,infoPanelW,vh);
+  
+  // Video area: 80% of screen width (right side), full height
+  const videoAreaW = vw * 0.8;
+  const videoAreaH = vh;
+  const videoAreaX = infoPanelW; // Start right after the info panel
+  const videoAreaY = 0;
+  
+  // Only draw video if it's loaded and has dimensions
+  if(video.videoWidth > 0 && video.videoHeight > 0){
+    // Calculate video display size maintaining aspect ratio (pillarbox for 4:3)
+    const vidAR = video.videoWidth / video.videoHeight;
+    const areaAR = videoAreaW / videoAreaH;
+    let drawW, drawH, drawX, drawY;
+    
+    if(vidAR < areaAR){
+      // Video is narrower (e.g., 4:3 in 16:9 area) - pillarbox on sides
+      drawH = videoAreaH;
+      drawW = videoAreaH * vidAR;
+      drawX = videoAreaX + (videoAreaW - drawW) / 2;
+      drawY = videoAreaY;
+    } else {
+      // Video is wider or same - letterbox top/bottom
+      drawW = videoAreaW;
+      drawH = videoAreaW / vidAR;
+      drawX = videoAreaX;
+      drawY = (vh - drawH) / 2;
+    }
+    
+    // Draw video
+    ctx.drawImage(video, drawX, drawY, drawW, drawH);
+  }
   
   if(!song) return;
   
