@@ -279,6 +279,10 @@ class VideoEncoder:
         """Prepare video file for a song entry (for songs with cinematics)."""
         output_path = os.path.join(self.temp_dir, f"video_{index:04d}.mp4")
         
+        # Helper function to check if a string is a URL
+        def is_url(path):
+            return path.startswith(('http://', 'https://', 'ftp://'))
+        
         # Try local video file first (from local_file field)
         if entry.local_file:
             local_path = entry.local_file
@@ -313,37 +317,8 @@ class VideoEncoder:
         
         # Try video_url field (may contain local path or URL)
         if entry.video_url:
-            # Check if video_url is a local file path
-            video_path = entry.video_url
-            if not os.path.exists(video_path):
-                video_path = os.path.join(os.getcwd(), entry.video_url)
-            
-            if os.path.exists(video_path):
-                # It's a local file
-                try:
-                    video_path = os.path.abspath(video_path)
-                    cmd = [
-                        "ffmpeg", "-y",
-                        "-i", video_path,
-                        "-ss", str(entry.start_time),
-                        "-t", str(entry.duration),
-                        "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
-                        "-c:v", self.project.config.codec,
-                        "-preset", "ultrafast",
-                        "-crf", str(self.project.config.crf),
-                        "-pix_fmt", self.project.config.pixel_format,
-                        "-r", str(self.project.config.fps),
-                        output_path
-                    ]
-                    if self.verbose:
-                        self.log(f"Processing video from video_url: {video_path}")
-                    subprocess.run(cmd, capture_output=True, check=True)
-                    return output_path
-                except subprocess.CalledProcessError as e:
-                    self.log(f"Failed to process video from video_url: {e}", "ERROR")
-                    if self.verbose and e.stderr:
-                        self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
-            else:
+            # First check if it's a URL
+            if is_url(entry.video_url):
                 # It's a URL, try to download
                 downloaded = os.path.join(self.temp_dir, f"downloaded_video_{index:04d}.tmp")
                 if self.download_file(entry.video_url, downloaded):
@@ -365,6 +340,38 @@ class VideoEncoder:
                         return output_path
                     except subprocess.CalledProcessError as e:
                         self.log(f"Failed to process downloaded video: {e}", "ERROR")
+            else:
+                # It's a local file path
+                video_path = entry.video_url
+                if not os.path.exists(video_path):
+                    video_path = os.path.join(os.getcwd(), entry.video_url)
+                
+                if os.path.exists(video_path):
+                    try:
+                        video_path = os.path.abspath(video_path)
+                        cmd = [
+                            "ffmpeg", "-y",
+                            "-i", video_path,
+                            "-ss", str(entry.start_time),
+                            "-t", str(entry.duration),
+                            "-vf", f"scale={self.project.config.width}:{self.project.config.height}:force_original_aspect_ratio=increase,pad={self.project.config.width}:{self.project.config.height}:(ow-iw)/2:(oh-ih)/2:black",
+                            "-c:v", self.project.config.codec,
+                            "-preset", "ultrafast",
+                            "-crf", str(self.project.config.crf),
+                            "-pix_fmt", self.project.config.pixel_format,
+                            "-r", str(self.project.config.fps),
+                            output_path
+                        ]
+                        if self.verbose:
+                            self.log(f"Processing video from video_url: {video_path}")
+                        subprocess.run(cmd, capture_output=True, check=True)
+                        return output_path
+                    except subprocess.CalledProcessError as e:
+                        self.log(f"Failed to process video from video_url: {e}", "ERROR")
+                        if self.verbose and e.stderr:
+                            self.log(f"FFmpeg stderr: {e.stderr.decode()}", "DEBUG")
+                else:
+                    self.log(f"Video file not found: {entry.video_url}", "WARN")
         
         return None
     
