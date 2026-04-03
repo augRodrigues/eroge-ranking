@@ -1,0 +1,1130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EMQ Ranking Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@400;700&family=Syne:wght@400;500;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d0d10;--surface:#14141a;--surface2:#1c1c26;--border:#26263a;--border2:#32324a;
+  --accent:#e8c547;--accent2:#c4a633;--accent-glow:rgba(232,197,71,.18);
+  --text:#e8e8f0;--muted:#7a7a98;--muted2:#4a4a62;
+  --c-op:#e8c547;--c-ed:#3ecfac;--c-in:#6ba4f5;--c-bg:#a48ef8;
+  --red:#f07070;--green:#3ecfac;
+  --r:8px;--r2:14px;--rnd:999px;
+  --serif:'Shippori Mincho B1',serif;
+  --sans:'Syne','Hiragino Sans',system-ui,sans-serif;
+  --mono:'DM Mono',monospace;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+button{font-family:inherit;cursor:pointer;border:none;outline:none;background:none}
+input,select{font-family:inherit;background:none;border:none;color:var(--text);outline:none}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+
+/* ─── LOAD SCREEN ─── */
+#load{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100vh;padding:40px 20px;gap:0}
+.load-inner{max-width:520px;width:100%}
+.load-logo{font-family:var(--serif);font-size:30px;font-weight:700;
+  color:var(--accent);letter-spacing:.05em;margin-bottom:4px}
+.load-sub{color:var(--muted);font-size:13px;margin-bottom:32px}
+
+.load-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);
+  padding:28px;margin-bottom:16px}
+.load-card h3{font-size:13px;text-transform:uppercase;letter-spacing:.1em;font-weight:700;
+  color:var(--muted);margin-bottom:14px}
+
+.load-status{display:flex;align-items:center;gap:10px;margin-bottom:18px;
+  padding:12px 14px;background:var(--surface2);border-radius:var(--r);font-size:13px}
+.status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--muted2)}
+.status-dot.ok{background:var(--green)}
+.status-dot.err{background:var(--red)}
+.status-dot.spin{background:var(--accent);animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+
+.load-bar-bg{height:4px;background:var(--border);border-radius:2px;margin-bottom:8px}
+.load-bar-fill{height:100%;background:var(--accent);border-radius:2px;
+  transition:width .4s;width:0}
+.load-bar-label{font-size:12px;color:var(--muted)}
+
+.load-file-btn{display:flex;align-items:center;justify-content:center;gap:8px;
+  width:100%;padding:12px;border-radius:var(--r);font-size:14px;font-weight:700;
+  background:var(--accent);color:#0d0d10;cursor:pointer;transition:filter .15s}
+.load-file-btn:hover{filter:brightness(1.1)}
+.load-file-btn input{display:none}
+
+.load-note{font-size:12px;color:var(--muted2);text-align:center;line-height:1.6;
+  padding-top:4px}
+
+/* ─── APP HEADER ─── */
+.app{display:none;flex-direction:column;min-height:100vh}
+.app.show{display:flex}
+header{height:52px;display:flex;align-items:center;gap:10px;padding:0 20px;
+  border-bottom:1px solid var(--border);flex-shrink:0;position:sticky;top:0;
+  background:rgba(13,13,16,.9);backdrop-filter:blur(12px);z-index:100}
+.hdr-logo{font-family:var(--serif);font-size:16px;font-weight:700;
+  color:var(--accent);letter-spacing:.05em;margin-right:auto}
+.hdr-db-info{font-size:11px;color:var(--muted2);font-family:var(--mono)}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:6px 13px;border-radius:var(--r);
+  font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;letter-spacing:.02em}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
+.btn-ghost:hover{border-color:var(--text);color:var(--text)}
+.btn-accent{background:var(--accent);color:#0d0d10;border:1px solid transparent}
+.btn-accent:hover{filter:brightness(1.08)}
+.btn-sm{padding:4px 10px;font-size:11px}
+
+/* ─── MAIN LAYOUT ─── */
+main{flex:1;display:flex;flex-direction:column;max-width:820px;
+  width:100%;margin:0 auto;padding:24px 20px 100px}
+
+/* ─── SEARCH ROW ─── */
+.search-row{display:flex;gap:8px;margin-bottom:6px}
+.search-wrap{flex:1;position:relative}
+.search-box{width:100%;padding:10px 14px 10px 38px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  font-size:14px;color:var(--text);transition:border-color .15s}
+.search-box:focus{border-color:var(--accent)}
+.search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);
+  color:var(--muted);font-size:15px;pointer-events:none}
+.search-dd{position:absolute;top:calc(100% + 5px);left:0;right:0;background:var(--surface2);
+  border:1px solid var(--border2);border-radius:var(--r2);
+  box-shadow:0 12px 40px rgba(0,0,0,.6);z-index:200;
+  max-height:320px;overflow-y:auto;display:none}
+.search-dd.open{display:block}
+.sr{padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;
+  flex-direction:column;gap:3px;transition:background .08s}
+.sr:last-child{border-bottom:none}
+.sr:hover,.sr.focused{background:var(--surface)}
+.sr-title{font-size:14px;font-weight:500}
+.sr-meta{font-size:11px;color:var(--muted);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.type-badge{font-size:10px;font-weight:800;padding:1px 6px;border-radius:3px;letter-spacing:.04em}
+.type-1{background:rgba(232,197,71,.15);color:var(--c-op)}
+.type-2{background:rgba(62,207,172,.15);color:var(--c-ed)}
+.type-3{background:rgba(107,164,245,.15);color:var(--c-in)}
+.type-4{background:rgba(164,142,248,.15);color:var(--c-bg)}
+.type-0{background:rgba(122,122,152,.15);color:var(--muted)}
+
+/* ─── GLOBAL CONTROLS ─── */
+.global-bar{display:flex;align-items:center;gap:12px;margin-bottom:18px;
+  padding:10px 14px;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r);font-size:13px;flex-wrap:wrap}
+.global-bar label{color:var(--muted);font-size:12px}
+.global-dur-input{width:52px;padding:3px 8px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:5px;font-family:var(--mono);
+  font-size:13px;color:var(--text);text-align:right}
+.global-dur-input:focus{border-color:var(--accent)}
+.apply-all-btn{padding:4px 12px;border-radius:var(--rnd);font-size:12px;font-weight:700;
+  background:var(--accent-glow);border:1px solid rgba(232,197,71,.3);
+  color:var(--accent);cursor:pointer;transition:all .15s}
+.apply-all-btn:hover{background:var(--accent);color:#0d0d10}
+.g-count{margin-left:auto;font-family:var(--mono);font-size:12px;
+  background:var(--accent-glow);color:var(--accent);
+  padding:2px 10px;border-radius:var(--rnd)}
+
+/* ─── RANKING SECTION HEADER ─── */
+.rank-header{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.rank-label{font-size:11px;text-transform:uppercase;letter-spacing:.1em;font-weight:700;color:var(--muted)}
+
+/* ─── SONG CARDS ─── */
+.rank-list{display:flex;flex-direction:column;gap:6px}
+.empty{text-align:center;padding:64px 20px;color:var(--muted);
+  border:1px dashed var(--border2);border-radius:var(--r2)}
+.empty-icon{font-size:32px;margin-bottom:10px;opacity:.35;display:block}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);
+  padding:12px 14px;display:grid;grid-template-columns:44px 1fr auto;gap:10px;
+  align-items:start;cursor:grab;user-select:none;
+  transition:border-color .15s,transform .1s}
+.card:active{cursor:grabbing}
+.card:hover{border-color:var(--border2)}
+.card.drag-src{opacity:.35;border:2px dashed var(--accent)}
+.card.drag-over{border-color:var(--accent);background:var(--accent-glow);transform:scale(1.01)}
+
+.card-rank{font-family:var(--mono);font-size:20px;color:var(--muted);
+  text-align:right;padding-top:3px;line-height:1;font-weight:500}
+.card-rank.top{color:var(--accent);font-size:24px;font-weight:700}
+
+.card-body{min-width:0;display:flex;flex-direction:column;gap:3px}
+.card-t{font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-tj{font-family:var(--serif);font-size:12px;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:2px}
+.card-game{font-size:12px;color:var(--muted)}
+.card-artists{font-size:11px;color:var(--muted2);margin-top:1px}
+
+.card-clip{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}
+.clip-label{font-size:11px;color:var(--muted2)}
+.clip-input{width:50px;padding:3px 7px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:5px;
+  font-family:var(--mono);font-size:12px;color:var(--text);text-align:right}
+.clip-input:focus{border-color:var(--accent)}
+.clip-sep{color:var(--muted2);font-size:11px}
+
+.card-audio{display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap}
+.audio-ok{font-size:11px;color:var(--green)}
+.audio-miss{font-size:11px;color:var(--muted2)}
+.audio-local{font-size:11px;color:var(--accent)}
+.upload-btn{font-size:11px;padding:2px 7px;border-radius:var(--rnd);
+  background:var(--surface2);border:1px solid var(--border);color:var(--muted);
+  cursor:pointer;transition:all .12s}
+.upload-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+.card-ctrl{display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0}
+.card-btns{display:flex;gap:3px}
+.ic-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+  border-radius:6px;font-size:12px;cursor:pointer;transition:all .12s;
+  background:var(--surface2);border:1px solid var(--border);color:var(--muted)}
+.ic-btn:hover{background:var(--border);color:var(--text)}
+.ic-btn.del:hover{background:rgba(240,112,112,.12);border-color:var(--red);color:var(--red)}
+
+/* ─── FIXED BOTTOM BAR ─── */
+.bottom{position:fixed;bottom:0;left:0;right:0;padding:10px 20px;
+  background:rgba(13,13,16,.95);border-top:1px solid var(--border);
+  backdrop-filter:blur(12px);z-index:99;
+  display:flex;align-items:center;gap:10px}
+
+/* ─── MODAL OVERLAY ─── */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(4px);
+  z-index:500;display:none;align-items:center;justify-content:center;padding:20px}
+.modal-bg.open{display:flex}
+.modal{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r2);
+  padding:26px;width:100%;max-width:460px}
+.modal h2{font-size:17px;font-weight:700;margin-bottom:14px}
+.modal-input{width:100%;padding:9px 12px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--r);
+  font-size:14px;color:var(--text);margin-bottom:10px}
+.modal-input:focus{border-color:var(--accent)}
+.modal-err{font-size:12px;color:var(--red);margin-bottom:8px;display:none}
+.modal-btns{display:flex;gap:8px;justify-content:flex-end}
+.modal-cancel{padding:8px 16px;border-radius:var(--r);font-size:13px;
+  background:var(--surface);border:1px solid var(--border);color:var(--muted);cursor:pointer}
+.modal-ok{padding:8px 18px;border-radius:var(--r);font-size:13px;font-weight:700;
+  background:var(--accent);color:#0d0d10;cursor:pointer}
+
+/* ─── VIDEO MODAL ─── */
+#vmodal-bg{position:fixed;inset:0;background:rgba(0,0,0,.82);backdrop-filter:blur(8px);
+  z-index:600;display:none;align-items:center;justify-content:center;padding:20px}
+#vmodal-bg.open{display:flex}
+.vmodal{background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--r2);padding:28px;width:100%;max-width:540px}
+.vmodal h2{font-family:var(--serif);font-size:22px;font-weight:700;margin-bottom:4px}
+.vmodal-sub{font-size:13px;color:var(--muted);margin-bottom:22px}
+.v-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px}
+.v-field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--muted);margin-bottom:5px;font-weight:700}
+.v-field select,.v-field input{width:100%;padding:7px 10px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--r);font-size:13px;color:var(--text)}
+.v-field select:focus,.v-field input:focus{border-color:var(--accent)}
+.vmodal-prog{margin-bottom:16px;display:none}
+.vpbar{height:5px;background:var(--border);border-radius:3px;margin-bottom:6px}
+.vpbar-fill{height:100%;border-radius:3px;background:var(--accent);transition:width .35s;width:0}
+.vpstatus{font-size:12px;color:var(--muted)}
+.vlog{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  padding:10px;font-family:var(--mono);font-size:11px;color:var(--muted);
+  max-height:140px;overflow-y:auto;margin-bottom:16px;display:none;line-height:1.9}
+.vlog-ok{color:var(--green)}
+.vlog-warn{color:#e8a83a}
+.vlog-err{color:var(--red)}
+.vmodal-btns{display:flex;gap:8px}
+.vdl{flex:1;padding:10px;border-radius:var(--r);font-size:14px;font-weight:700;
+  background:var(--accent);color:#0d0d10;text-align:center;cursor:pointer;
+  text-decoration:none;display:none;align-items:center;justify-content:center}
+.vdl.show{display:flex}
+
+/* ─── TOAST ─── */
+.toast{position:fixed;bottom:70px;left:50%;transform:translateX(-50%);
+  background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);
+  padding:9px 18px;font-size:13px;color:var(--text);z-index:800;
+  animation:toastIn .2s ease;pointer-events:none;white-space:nowrap}
+.toast.err{border-color:var(--red);color:var(--red)}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translateX(-50%)}}
+
+/* ─── OFFSCREEN CANVAS ─── */
+#vcanvas{position:absolute;left:-9999px;top:-9999px}
+
+/* ─── TRANSITIONS ─── */
+.fade{animation:fadeUp .22s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ════════════════ LOAD SCREEN ════════════════ -->
+<div id="load">
+<div class="load-inner fade">
+  <div class="load-logo">♪ EMQ Ranking</div>
+  <div class="load-sub">Eroge Music Quiz — ranking video builder</div>
+
+  <div class="load-card">
+    <h3>Database</h3>
+    <div class="load-status" id="load-status">
+      <div class="status-dot spin" id="status-dot"></div>
+      <span id="status-text">Looking for db.json…</span>
+    </div>
+    <div id="load-prog" style="display:none;margin-bottom:14px">
+      <div class="load-bar-bg"><div class="load-bar-fill" id="load-bar"></div></div>
+      <div class="load-bar-label" id="load-bar-label"></div>
+    </div>
+    <label class="load-file-btn" id="load-file-label" style="display:none">
+      <input type="file" id="load-file" accept=".json">
+      Choose db.json file
+    </label>
+  </div>
+
+  <div class="load-note">
+    No db.json? Run <code>python build_db.py /path/to/dump</code> then place
+    the output alongside <code>index.html</code>.
+  </div>
+</div>
+</div>
+
+<!-- ════════════════ APP ════════════════ -->
+<div class="app" id="app">
+
+  <header>
+    <div class="hdr-logo">♪ EMQ Ranking</div>
+    <span class="hdr-db-info" id="hdr-info"></span>
+    <button class="btn btn-ghost btn-sm" id="hdr-load">Load ranking</button>
+    <button class="btn btn-ghost btn-sm" id="hdr-save">Save ranking</button>
+    <button class="btn btn-accent btn-sm" id="hdr-video">▶ Generate video</button>
+    <input type="file" id="load-ranking-file" accept=".json" style="display:none">
+  </header>
+
+  <main>
+    <!-- Search row -->
+    <div class="search-row">
+      <div class="search-wrap" id="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input type="text" class="search-box" id="search-box"
+          placeholder="Search song, game, or artist…" autocomplete="off">
+        <div class="search-dd" id="search-dd"></div>
+      </div>
+      <button class="btn btn-ghost" id="url-btn" style="white-space:nowrap">+ URL</button>
+    </div>
+
+    <!-- Global duration control -->
+    <div class="global-bar" id="global-bar">
+      <label>Default clip length</label>
+      <input type="number" class="global-dur-input" id="global-dur" min="5" max="600" value="30"> s
+      <button class="apply-all-btn" id="apply-all">Apply to all</button>
+      <span class="clip-sep">&nbsp;·&nbsp; Start offset</span>
+      <input type="number" class="global-dur-input" id="global-start" min="0" max="9999" value="0"> s
+      <button class="apply-all-btn" id="apply-all-start">Apply to all</button>
+      <span class="g-count" id="g-count">0</span>
+    </div>
+
+    <!-- Ranking -->
+    <div class="rank-header">
+      <span class="rank-label">Ranking</span>
+    </div>
+    <div class="rank-list" id="rank-list">
+      <div class="empty">
+        <span class="empty-icon">♬</span>
+        Search for songs or paste an EMQ link to start building your ranking.
+      </div>
+    </div>
+  </main>
+
+  <!-- Bottom bar -->
+  <div class="bottom" id="bottom">
+    <span style="font-size:13px;color:var(--muted);margin-right:auto">
+      <strong id="b-count" style="color:var(--text)">0</strong> songs
+      · <span id="b-dur" style="color:var(--muted)"></span>
+    </span>
+    <button class="btn btn-ghost btn-sm" id="b-save">Save</button>
+    <button class="btn btn-accent btn-sm" id="b-video">▶ Generate video</button>
+  </div>
+</div>
+
+<!-- ════════════════ URL MODAL ════════════════ -->
+<div class="modal-bg" id="url-modal">
+<div class="modal">
+  <h2>Add by EMQ link</h2>
+  <div class="modal-err" id="url-err"></div>
+  <input type="text" class="modal-input" id="url-input"
+    placeholder="https://erogemusicquiz.com/music/12345  or just  12345">
+  <div class="modal-btns">
+    <button class="modal-cancel" id="url-cancel">Cancel</button>
+    <button class="modal-ok" id="url-ok">Add</button>
+  </div>
+</div>
+</div>
+
+<!-- ════════════════ VIDEO MODAL ════════════════ -->
+<div id="vmodal-bg">
+<div class="vmodal">
+  <h2 id="vm-title">Generate Ranking Video</h2>
+  <div class="vmodal-sub" id="vm-sub">Configure and encode your ranking</div>
+
+  <div class="v-grid" id="v-settings">
+    <div class="v-field">
+      <label>Resolution</label>
+      <select id="v-res">
+        <option value="1920x1080">1920 × 1080 (1080p)</option>
+        <option value="1280x720">1280 × 720 (720p)</option>
+      </select>
+    </div>
+    <div class="v-field">
+      <label>Frame rate</label>
+      <select id="v-fps"><option value="30">30 fps</option><option value="60">60 fps</option></select>
+    </div>
+    <div class="v-field">
+      <label>Video bitrate</label>
+      <select id="v-bitrate">
+        <option value="8000000">8 Mbps (high)</option>
+        <option value="5000000">5 Mbps (medium)</option>
+        <option value="2500000">2.5 Mbps (low)</option>
+      </select>
+    </div>
+    <div class="v-field">
+      <label>Order</label>
+      <select id="v-dir">
+        <option value="asc">Last → First (#N → #1)</option>
+        <option value="desc">First → Last (#1 → #N)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="vmodal-prog" id="vm-prog">
+    <div class="vpbar"><div class="vpbar-fill" id="vm-bar"></div></div>
+    <div class="vpstatus" id="vm-status">Initializing…</div>
+  </div>
+  <div class="vlog" id="vm-log"></div>
+
+  <div class="vmodal-btns">
+    <a class="vdl" id="vm-dl" download="ranking.webm">⬇ Download .webm</a>
+    <button class="modal-cancel" id="vm-cancel">Cancel</button>
+    <button class="modal-ok" id="vm-go" style="padding:10px 20px;font-size:14px">Generate</button>
+  </div>
+</div>
+</div>
+
+<canvas id="vcanvas"></canvas>
+
+<script>
+'use strict';
+
+// ─────────────────────────────────────────────────────────────
+//  CONSTANTS
+// ─────────────────────────────────────────────────────────────
+const TYPE_LABEL = {1:'Opening',2:'Ending',3:'Insert Song',4:'BGM',0:'Unknown'};
+const TYPE_COLOR = {1:'#e8c547',2:'#3ecfac',3:'#6ba4f5',4:'#a48ef8',0:'#7a7a98'};
+const ROLE_LABEL = {1:'Vocals',2:'Music',3:'Performer',4:'Director',5:'Arrangement',6:'Lyrics'};
+const ROLE_ORDER = [1,6,2,5,3,4];
+
+// ─────────────────────────────────────────────────────────────
+//  STATE
+// ─────────────────────────────────────────────────────────────
+let songArr = [];      // flat array of song objects (from db.json)
+let songIdx = null;    // Map: id → song
+let searchKeys = [];   // [{id, key}]
+let ranking = [];      // [{song, duration, startTime, localFile}]
+let cancelEnc = false;
+let blobUrl = null;
+
+const $ = id => document.getElementById(id);
+
+// ─────────────────────────────────────────────────────────────
+//  UTILITIES
+// ─────────────────────────────────────────────────────────────
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function toast(msg, isErr=false){
+  const el=document.createElement('div'); el.className='toast'+(isErr?' err':'');
+  el.textContent=msg; document.body.appendChild(el);
+  setTimeout(()=>el.remove(),2400);
+}
+function readFileText(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsText(file,'utf-8'); }); }
+function readFileBuf(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsArrayBuffer(file); }); }
+function loadImage(url){ return new Promise(res=>{ const i=new Image(); i.crossOrigin='anonymous'; i.onload=()=>res(i); i.onerror=()=>res(null); i.src=url; }); }
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function yield_(){ return new Promise(r=>setTimeout(r,0)); }
+function totalSecs(){ return ranking.reduce((s,r)=>s+r.duration,0); }
+function fmtDur(s){ const m=Math.floor(s/60); return m+'m '+(s%60)+'s'; }
+
+// ─────────────────────────────────────────────────────────────
+//  DB LOADING
+// ─────────────────────────────────────────────────────────────
+async function loadDB(json) {
+  const data = typeof json === 'string' ? JSON.parse(json) : json;
+  songArr = data.songs || [];
+  songIdx = new Map();
+  searchKeys = [];
+  for (const s of songArr) {
+    songIdx.set(String(s.id), s);
+    searchKeys.push({
+      id: s.id,
+      key: ((s.t||'') + ' ' + (s.tj||'') + ' ' + (s.gt||'') + ' ' +
+            (s.ar||[]).map(a=>a.n).join(' ')).toLowerCase(),
+    });
+  }
+  $('hdr-info').textContent = `${songArr.length.toLocaleString()} songs · ${data.built?.slice(0,10)||''}`;
+}
+
+async function tryFetchDB(onProg) {
+  try {
+    onProg(0.1, 'Fetching db.json…');
+    const res = await fetch('./db.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    onProg(0.4, 'Parsing…');
+    const json = await res.text();
+    onProg(0.8, 'Building search index…');
+    await loadDB(json);
+    onProg(1, 'Ready');
+    return true;
+  } catch(e) { return false; }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  STARTUP
+// ─────────────────────────────────────────────────────────────
+async function startup() {
+  const setProg = (pct, label) => {
+    $('load-bar').style.width = Math.round(pct*100)+'%';
+    $('load-bar-label').textContent = label;
+  };
+  const setStatus = (icon, msg) => {
+    $('status-dot').className = 'status-dot ' + icon;
+    $('status-text').textContent = msg;
+  };
+
+  $('load-prog').style.display = 'block';
+  setStatus('spin', 'Looking for db.json…');
+
+  const ok = await tryFetchDB(setProg);
+  if (ok) {
+    setStatus('ok', `${songArr.length.toLocaleString()} songs loaded`);
+    setTimeout(showApp, 400);
+    return;
+  }
+
+  setStatus('err', 'db.json not found — choose the file manually');
+  $('load-file-label').style.display = 'flex';
+  $('load-prog').style.display = 'none';
+}
+
+function showApp() {
+  $('load').style.display = 'none';
+  $('app').classList.add('show','fade');
+  renderRanking();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SEARCH
+// ─────────────────────────────────────────────────────────────
+function searchSongs(q, limit=28) {
+  if (!q.trim()) return [];
+  const terms = q.toLowerCase().trim().split(/\s+/);
+  const out = [];
+  for (const e of searchKeys) {
+    if (terms.every(t => e.key.includes(t))) {
+      out.push(songIdx.get(String(e.id)));
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
+function renderDropdown(results) {
+  const dd = $('search-dd');
+  if (!results.length){ dd.classList.remove('open'); return; }
+  dd.innerHTML = '';
+  focusedIdx = -1;
+  results.forEach(song => {
+    const type = song.st || 0;
+    const vocals = (song.ar||[]).filter(a=>a.r===1).map(a=>a.n).join(', ');
+    const div = document.createElement('div');
+    div.className = 'sr';
+    div.innerHTML = `
+      <div class="sr-title">${esc(song.t)}${song.tj&&song.tj!==song.t?' <span style="font-family:var(--serif);font-weight:400;color:var(--muted)">'+esc(song.tj)+'</span>':''}</div>
+      <div class="sr-meta">
+        <span class="type-badge type-${type}">${TYPE_LABEL[type]||'?'}</span>
+        <span>${esc(song.gt||'')}</span>
+        ${vocals?`<span>· ${esc(vocals)}</span>`:''}
+      </div>`;
+    div.addEventListener('mousedown', e => { e.preventDefault(); addSong(song); $('search-box').value=''; dd.classList.remove('open'); });
+    dd.appendChild(div);
+  });
+  dd.classList.add('open');
+}
+
+let searchTimer = null, focusedIdx = -1;
+
+// ─────────────────────────────────────────────────────────────
+//  RANKING MANAGEMENT
+// ─────────────────────────────────────────────────────────────
+function addSong(song) {
+  if (ranking.some(r=>String(r.song.id)===String(song.id))){ toast('Already in ranking'); return; }
+  const dur = parseInt($('global-dur').value)||30;
+  const start = parseInt($('global-start').value)||0;
+  ranking.push({song, duration:Math.max(5,dur), startTime:Math.max(0,start), localFile:null});
+  saveSession();
+  renderRanking();
+}
+function removeSong(idx){ ranking.splice(idx,1); saveSession(); renderRanking(); }
+function moveSong(from, to){ if(to<0||to>=ranking.length)return; const [x]=ranking.splice(from,1); ranking.splice(to,0,x); saveSession(); renderRanking(); }
+
+function saveSession(){
+  try{ sessionStorage.setItem('emq-r', JSON.stringify(ranking.map(r=>({id:r.song.id,d:r.duration,s:r.startTime})))); }catch(e){}
+}
+function restoreSession(){
+  try{
+    const saved=JSON.parse(sessionStorage.getItem('emq-r')||'[]');
+    ranking=[];
+    for(const x of saved){
+      const s=songIdx.get(String(x.id));
+      if(s) ranking.push({song:s,duration:x.d||30,startTime:x.s||0,localFile:null});
+    }
+  }catch(e){}
+}
+
+function saveToFile(){
+  const data={ranking:ranking.map((r,i)=>({rank:i+1,id:r.song.id,t:r.song.t,gt:r.song.gt,st:r.song.st,duration:r.duration,startTime:r.startTime}))};
+  const bl=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(bl); a.download='emq-ranking.json'; a.click(); URL.revokeObjectURL(a.href);
+}
+function loadFromFile(text){
+  try{
+    const data=JSON.parse(text);
+    const items=data.ranking||data; let miss=0;
+    ranking=items.map(x=>{
+      const s=songIdx.get(String(x.id||x.song_id));
+      if(!s){miss++;return null;}
+      return{song:s,duration:x.duration||x.d||30,startTime:x.startTime||x.s||0,localFile:null};
+    }).filter(Boolean);
+    if(miss) toast(`${miss} song(s) not found in database`,true);
+    saveSession(); renderRanking();
+  }catch(e){ toast('Invalid JSON',true); }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  RENDER
+// ─────────────────────────────────────────────────────────────
+function renderRanking(){
+  const list=$('rank-list');
+  const n=ranking.length;
+  $('g-count').textContent=n;
+  $('b-count').textContent=n;
+  $('b-dur').textContent=n?fmtDur(totalSecs()):'';
+  $('bottom').style.display=n?'flex':'none';
+
+  if(!n){
+    list.innerHTML='<div class="empty"><span class="empty-icon">♬</span>Search for songs or paste an EMQ link to start.</div>';
+    return;
+  }
+
+  let dragSrc=null;
+  list.innerHTML='';
+  ranking.forEach((entry,idx)=>{
+    const {song,duration,startTime,localFile}=entry;
+    const type=song.st||0;
+    const typeLabel=TYPE_LABEL[type]||'?';
+    const rank=idx+1;
+    const vocals=(song.ar||[]).filter(a=>a.r===1).map(a=>a.n).join(', ');
+    const composers=(song.ar||[]).filter(a=>a.r===2).map(a=>a.n).join(', ');
+
+    const card=document.createElement('div');
+    card.className='card';
+    card.draggable=true;
+    card.dataset.idx=idx;
+
+    card.innerHTML=`
+      <div class="card-rank ${rank<=3?'top':''}">${rank}</div>
+      <div class="card-body">
+        <div class="card-t" title="${esc(song.t)}">${esc(song.t)}</div>
+        ${song.tj&&song.tj!==song.t?`<div class="card-tj">${esc(song.tj)}</div>`:''}
+        <div class="card-meta">
+          <span class="type-badge type-${type}">${typeLabel}</span>
+          <span class="card-game">${esc(song.gt||'Unknown')}</span>
+        </div>
+        <div class="card-artists">${[vocals&&'Vocals: '+vocals,composers&&'Music: '+composers].filter(Boolean).join(' · ')}</div>
+        <div class="card-clip">
+          <span class="clip-label">Clip</span>
+          <input class="clip-input" type="number" min="5" max="9999"
+            value="${duration}" data-f="dur" data-i="${idx}"> s
+          <span class="clip-sep">·</span>
+          <span class="clip-label">Start</span>
+          <input class="clip-input" type="number" min="0" max="99999"
+            value="${startTime}" data-f="start" data-i="${idx}"> s
+        </div>
+        <div class="card-audio">
+          ${song.au
+            ? `<span class="audio-ok">🎵 EMQ audio</span>`
+            : `<span class="audio-miss">No audio URL</span>`}
+          ${localFile?`<span class="audio-local">· 📁 ${esc(localFile.name.substring(0,20))}</span>`:''}
+          <button class="upload-btn" data-ul="${idx}">📁 Upload local</button>
+        </div>
+      </div>
+      <div class="card-ctrl">
+        <div class="card-btns">
+          <button class="ic-btn" data-up="${idx}" title="Move up">↑</button>
+          <button class="ic-btn" data-dn="${idx}" title="Move down">↓</button>
+          <button class="ic-btn del" data-rm="${idx}" title="Remove">✕</button>
+        </div>
+      </div>`;
+
+    // Drag
+    card.addEventListener('dragstart',e=>{ dragSrc=idx; e.dataTransfer.effectAllowed='move'; setTimeout(()=>card.classList.add('drag-src'),0); });
+    card.addEventListener('dragend',()=>card.classList.remove('drag-src'));
+    card.addEventListener('dragover',e=>{ e.preventDefault(); card.classList.add('drag-over'); });
+    card.addEventListener('dragleave',()=>card.classList.remove('drag-over'));
+    card.addEventListener('drop',e=>{ e.preventDefault(); card.classList.remove('drag-over'); if(dragSrc!==null&&dragSrc!==idx){ moveSong(dragSrc,idx); dragSrc=null; } });
+
+    list.appendChild(card);
+  });
+
+  // Event delegation (set once on list)
+  if(!list._evSet){
+    list._evSet=true;
+    list.addEventListener('click',e=>{
+      const up=e.target.closest('[data-up]'), dn=e.target.closest('[data-dn]');
+      const rm=e.target.closest('[data-rm]'), ul=e.target.closest('[data-ul]');
+      if(up) moveSong(+up.dataset.up,+up.dataset.up-1);
+      if(dn) moveSong(+dn.dataset.dn,+dn.dataset.dn+1);
+      if(rm) removeSong(+rm.dataset.rm);
+      if(ul){
+        const inp=document.createElement('input'); inp.type='file'; inp.accept='audio/*,video/*';
+        inp.onchange=()=>{ if(inp.files[0]){ranking[+ul.dataset.ul].localFile=inp.files[0]; renderRanking();} };
+        inp.click();
+      }
+    });
+    list.addEventListener('change',e=>{
+      const inp=e.target;
+      if(!inp.classList.contains('clip-input')) return;
+      const i=+inp.dataset.i, v=parseInt(inp.value)||0;
+      if(inp.dataset.f==='dur') ranking[i].duration=Math.max(5,v);
+      else ranking[i].startTime=Math.max(0,v);
+      saveSession();
+      $('b-dur').textContent=fmtDur(totalSecs());
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  VNDB COVER CACHE
+// ─────────────────────────────────────────────────────────────
+const coverCache=new Map();
+async function getCover(vndbId){
+  if(!vndbId) return null;
+  if(coverCache.has(vndbId)) return coverCache.get(vndbId);
+  try{
+    const res=await fetch('https://api.vndb.org/kana/vn',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({filters:['id','=',vndbId],fields:'image.url,image.sexual'})
+    });
+    if(!res.ok) throw new Error();
+    const d=await res.json();
+    const url=d.results?.[0]?.image?.url;
+    const img=url?await loadImage(url):null;
+    coverCache.set(vndbId,img); return img;
+  }catch(e){ coverCache.set(vndbId,null); return null; }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  VIDEO GENERATION
+// ─────────────────────────────────────────────────────────────
+async function generateVideo(){
+  cancelEnc=false; blobUrl=null;
+
+  const dir=$('v-dir').value;
+  const entries=dir==='asc'?[...ranking].reverse():[...ranking];
+  const [vw,vh]=$('v-res').value.split('x').map(Number);
+  const fps=parseInt($('v-fps').value)||30;
+  const bitrate=parseInt($('v-bitrate').value)||8000000;
+
+  const canvas=$('vcanvas');
+  canvas.width=vw; canvas.height=vh;
+  const ctx=canvas.getContext('2d');
+
+  // UI
+  $('v-settings').style.display='none';
+  $('vm-go').style.display='none';
+  $('vm-title').textContent='Encoding…';
+  $('vm-sub').textContent=`${entries.length} songs · ~${fmtDur(totalSecs())} total`;
+  $('vm-prog').style.display='block';
+  $('vm-log').style.display='block';
+
+  const log=(msg,cls='')=>{
+    const sp=document.createElement('span');
+    sp.className=cls?'vlog-'+cls:''; sp.textContent=msg+'\n';
+    $('vm-log').appendChild(sp); $('vm-log').scrollTop=9999;
+  };
+  const prog=(p,s)=>{ $('vm-bar').style.width=Math.round(p*100)+'%'; $('vm-status').textContent=s; };
+
+  // Pre-fetch covers
+  log('▶ Fetching cover art…');
+  const covers=new Map();
+  for(let i=0;i<entries.length;i++){
+    if(cancelEnc) return;
+    const {song}=entries[i];
+    const img=song.vid?await getCover(song.vid):null;
+    covers.set(song.id,img);
+    if(img) log(`  ✓ ${song.gt||song.t}`, 'ok');
+    else log(`  – ${song.gt||song.t}: no cover`);
+    prog(0.12*(i+1)/entries.length,`Cover art ${i+1}/${entries.length}`);
+    await yield_();
+  }
+
+  // Set up recording
+  const audioCtx=new AudioContext();
+  const audioDest=audioCtx.createMediaStreamDestination();
+  const videoStream=canvas.captureStream(fps);
+  const stream=new MediaStream([...videoStream.getVideoTracks(),...audioDest.stream.getAudioTracks()]);
+  const mime=MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')?'video/webm;codecs=vp9,opus':'video/webm';
+  const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:bitrate});
+  const chunks=[]; let recDone=false;
+  recorder.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+  recorder.onstop=()=>{ recDone=true; };
+  recorder.start(500);
+  log('▶ Recording started');
+
+  const total=entries.length;
+  for(let i=0;i<entries.length;i++){
+    if(cancelEnc){ recorder.stop(); return; }
+    const {song,duration,startTime,localFile}=entries[i];
+    const rank=dir==='asc'?total-i:i+1;
+    const cover=covers.get(song.id)||null;
+
+    prog(0.12+0.83*(i/total),`[${i+1}/${total}] ${song.t}`);
+    log(`▶ #${rank} ${song.t}`);
+
+    // Audio
+    let audioSrc=null;
+    if(localFile){
+      try{
+        const ab=await readFileBuf(localFile);
+        const buf=await audioCtx.decodeAudioData(ab);
+        audioSrc=audioCtx.createBufferSource();
+        audioSrc.buffer=buf; audioSrc.connect(audioDest);
+        audioSrc.start(0,Math.min(startTime,buf.duration-1),duration);
+        log(`  ✓ local audio: ${localFile.name}`,'ok');
+      }catch(e){ log(`  ✗ local audio decode failed`,'err'); audioSrc=null; }
+    } else if(song.au){
+      try{
+        const res=await fetch(song.au,{credentials:'include',mode:'cors'});
+        if(!res.ok) throw new Error(`${res.status}`);
+        const ab=await res.arrayBuffer();
+        const buf=await audioCtx.decodeAudioData(ab);
+        audioSrc=audioCtx.createBufferSource();
+        audioSrc.buffer=buf; audioSrc.connect(audioDest);
+        audioSrc.start(0,Math.min(startTime,buf.duration-1),duration);
+        log(`  ✓ EMQ audio`,'ok');
+      }catch(e){ log(`  ✗ EMQ audio: ${e.message} — use "Upload local" per song`,'warn'); }
+    } else {
+      log(`  – no audio`);
+    }
+
+    await animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTime);
+    if(audioSrc){ try{audioSrc.stop();}catch(e){} }
+  }
+
+  // Black fade out
+  for(let f=0;f<Math.round(fps*0.4);f++){
+    const a=f/(fps*0.4);
+    drawFrame(ctx,vw,vh,null,null,null,null,1,1);
+    ctx.fillStyle=`rgba(0,0,0,${a*a})`; ctx.fillRect(0,0,vw,vh);
+    await sleep(1000/fps);
+  }
+
+  recorder.stop();
+  await new Promise(r=>{const check=()=>recDone?r():setTimeout(check,80);check();});
+
+  const blob=new Blob(chunks,{type:'video/webm'});
+  blobUrl=URL.createObjectURL(blob);
+  $('vm-dl').href=blobUrl; $('vm-dl').classList.add('show');
+  $('vm-cancel').textContent='Close';
+  $('vm-title').textContent='Video ready!';
+  prog(1,'Done');
+  log(`▶ ${(blob.size/1024/1024).toFixed(1)} MB — ready to download`,'ok');
+}
+
+async function animateSong(ctx,vw,vh,song,rank,total,cover,duration,fps,startTime){
+  const ms=duration*1000;
+  const t0=performance.now();
+  return new Promise(res=>{
+    let last=t0;
+    const interval=1000/fps-2;
+    function frame(){
+      if(cancelEnc){res();return;}
+      const now=performance.now();
+      const el=now-t0;
+      if(el>=ms){res();return;}
+      if(now-last>=interval){ last=now; drawFrame(ctx,vw,vh,song,rank,total,cover,el/ms,duration); }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+//  CANVAS DRAWING
+// ─────────────────────────────────────────────────────────────
+function drawFrame(ctx,vw,vh,song,rank,total,cover,progress,duration){
+  ctx.clearRect(0,0,vw,vh);
+
+  // ── Background ──
+  if(cover){
+    ctx.save();
+    ctx.filter='blur(32px) brightness(0.25) saturate(1.6)';
+    const sc=Math.max(vw/cover.naturalWidth,vh/cover.naturalHeight)*1.15;
+    const dw=cover.naturalWidth*sc, dh=cover.naturalHeight*sc;
+    ctx.drawImage(cover,(vw-dw)/2,(vh-dh)/2,dw,dh);
+    ctx.filter='none';
+    ctx.restore();
+  } else {
+    const g=ctx.createRadialGradient(vw/2,vh/2,0,vw/2,vh/2,vw/1.2);
+    g.addColorStop(0,'#16161f'); g.addColorStop(1,'#0a0a10');
+    ctx.fillStyle=g; ctx.fillRect(0,0,vw,vh);
+  }
+
+  // Dark left gradient
+  const lg=ctx.createLinearGradient(0,0,vw,0);
+  lg.addColorStop(0,'rgba(8,8,14,0.9)');
+  lg.addColorStop(0.5,'rgba(8,8,14,0.65)');
+  lg.addColorStop(1,'rgba(8,8,14,0.1)');
+  ctx.fillStyle=lg; ctx.fillRect(0,0,vw,vh);
+
+  if(!song) return; // fade-out only
+
+  const type=song.st||0;
+  const typeLabel=TYPE_LABEL[type]||'?';
+  const typeColor=TYPE_COLOR[type]||'#888';
+
+  // ── Left: cover art panel ──
+  const padL=vw*0.04, padV=vh*0.12;
+  const coverH=vh-padV*2, coverW=coverH*0.65;
+  const cx=padL, cy=padV;
+  if(cover){
+    ctx.save();
+    rRect(ctx,cx,cy,coverW,coverH,14); ctx.clip();
+    const sc=Math.min(coverW/cover.naturalWidth,coverH/cover.naturalHeight);
+    const dw=cover.naturalWidth*sc, dh=cover.naturalHeight*sc;
+    ctx.drawImage(cover,cx+(coverW-dw)/2,cy+(coverH-dh)/2,dw,dh);
+    ctx.restore();
+    // Subtle shadow overlay on cover
+    const sh=ctx.createLinearGradient(cx,cy,cx,cy+coverH);
+    sh.addColorStop(0,'rgba(0,0,0,0)'); sh.addColorStop(1,'rgba(0,0,0,0.45)');
+    rRect(ctx,cx,cy,coverW,coverH,14); ctx.fillStyle=sh; ctx.fill();
+  }
+
+  // Cover art border
+  rRect(ctx,cx,cy,coverW,coverH,14);
+  ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1; ctx.stroke();
+
+  // ── Rank number (bottom-left, over cover) ──
+  const rkSize=Math.round(vw*0.056);
+  ctx.font=`900 ${rkSize}px 'DM Mono',monospace`;
+  ctx.fillStyle=typeColor;
+  ctx.textBaseline='bottom';
+  // Shadow
+  ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=20;
+  ctx.fillText('#'+rank, cx+8, cy+coverH-10);
+  ctx.shadowBlur=0;
+
+  // ── Right panel: song info ──
+  const infoX=cx+coverW+vw*0.045;
+  const infoW=vw-infoX-vw*0.04;
+  let iy=cy+40;
+
+  // Type badge
+  const tBW=typeLabel.length*11+28, tBH=38;
+  rRect(ctx,infoX,iy,tBW,tBH,6);
+  ctx.fillStyle=typeColor+'28'; ctx.fill();
+  ctx.strokeStyle=typeColor+'60'; ctx.lineWidth=1; ctx.stroke();
+  ctx.fillStyle=typeColor;
+  ctx.font=`800 15px 'Syne',sans-serif`;
+  ctx.textBaseline='middle'; ctx.textAlign='left';
+  ctx.fillText(typeLabel.toUpperCase(), infoX+14, iy+tBH/2);
+  iy+=tBH+22;
+
+  // Song title
+  ctx.fillStyle='#ffffff';
+  ctx.textBaseline='alphabetic';
+  const tsize=Math.max(34,Math.min(72,Math.floor(1700/Math.max(song.t.length,6))));
+  ctx.font=`700 ${tsize}px 'Syne',sans-serif`;
+  iy+=wrapText(ctx,song.t,infoX,iy,infoW,tsize+10,2);
+
+  // Japanese title
+  if(song.tj && song.tj!==song.t){
+    iy+=8;
+    ctx.fillStyle='rgba(255,255,255,0.45)';
+    ctx.font=`400 24px 'Shippori Mincho B1',serif`;
+    wrapText(ctx,song.tj,infoX,iy,infoW,34,1);
+    iy+=40;
+  } else { iy+=14; }
+
+  // Thin divider
+  iy+=18;
+  ctx.fillStyle='rgba(255,255,255,0.1)';
+  ctx.fillRect(infoX,iy,Math.min(200,infoW*0.3),1.5);
+  iy+=22;
+
+  // Game title
+  ctx.fillStyle='rgba(255,255,255,0.78)';
+  ctx.font=`500 22px 'Syne',sans-serif`;
+  wrapText(ctx,song.gt||'Unknown',infoX,iy,infoW,32,1);
+  iy+=40;
+
+  // Artists
+  for(const role of ROLE_ORDER){
+    const arts=(song.ar||[]).filter(a=>a.r===role);
+    if(!arts.length) continue;
+    const names=arts.map(a=>a.n).join(', ');
+    ctx.fillStyle='rgba(232,197,71,0.55)';
+    ctx.font=`500 14px 'DM Mono',monospace`;
+    ctx.fillText((ROLE_LABEL[role]||'?')+':',infoX,iy);
+    ctx.fillStyle='rgba(255,255,255,0.75)';
+    ctx.font=`400 17px 'Syne',sans-serif`;
+    wrapText(ctx,names,infoX+120,iy,infoW-124,24,1);
+    iy+=28;
+  }
+
+  // ── Progress bar (full width, bottom) ──
+  const barY=vh-42, barH=5;
+  ctx.fillStyle='rgba(255,255,255,0.06)';
+  ctx.fillRect(0,barY,vw,barH);
+  ctx.fillStyle=typeColor;
+  ctx.fillRect(0,barY,vw*progress,barH);
+  // Glow
+  ctx.shadowColor=typeColor; ctx.shadowBlur=12;
+  ctx.fillRect(Math.max(0,vw*progress-2),barY,2,barH);
+  ctx.shadowBlur=0;
+
+  // Timer
+  const rem=Math.ceil(duration*(1-progress));
+  const mm=Math.floor(rem/60), ss=String(rem%60).padStart(2,'0');
+  ctx.fillStyle='rgba(255,255,255,0.45)';
+  ctx.font=`400 18px 'DM Mono',monospace`;
+  ctx.textBaseline='middle'; ctx.textAlign='right';
+  ctx.fillText(`${mm}:${ss}`,vw-16,barY+barH/2);
+  ctx.textAlign='left';
+}
+
+function wrapText(ctx,text,x,y,maxW,lineH,maxLines=3){
+  if(!text) return 0;
+  const words=text.split(' ');
+  let line='', drawn=0;
+  for(let i=0;i<words.length;i++){
+    const test=line?line+' '+words[i]:words[i];
+    if(ctx.measureText(test).width>maxW && line){
+      ctx.fillText(line,x,y+drawn*lineH); line=words[i]; drawn++;
+      if(drawn>=maxLines){ line=''; break; }
+    } else line=test;
+  }
+  if(line){ ctx.fillText(line,x,y+drawn*lineH); drawn++; }
+  return drawn*lineH;
+}
+
+function rRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.arcTo(x+w,y,x+w,y+r,r);
+  ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h,x+w-r,y+h,r);
+  ctx.lineTo(x+r,y+h); ctx.arcTo(x,y+h,x,y+h-r,r);
+  ctx.lineTo(x,y+r); ctx.arcTo(x,y,x+r,y,r); ctx.closePath();
+}
+
+// ─────────────────────────────────────────────────────────────
+//  EVENT BINDING
+// ─────────────────────────────────────────────────────────────
+function bindEvents(){
+  // DB file picker
+  $('load-file').addEventListener('change',async e=>{
+    const file=e.target.files[0]; if(!file) return;
+    $('status-dot').className='status-dot spin'; $('status-text').textContent='Parsing…';
+    $('load-prog').style.display='block';
+    $('load-bar').style.width='30%'; $('load-bar-label').textContent='Reading file…';
+    try{
+      const text=await readFileText(file);
+      $('load-bar').style.width='70%'; $('load-bar-label').textContent='Building index…';
+      await loadDB(text);
+      $('load-bar').style.width='100%';
+      $('status-dot').className='status-dot ok';
+      $('status-text').textContent=`${songArr.length.toLocaleString()} songs loaded`;
+      setTimeout(()=>{ showApp(); restoreSession(); renderRanking(); },300);
+    }catch(err){
+      $('status-dot').className='status-dot err';
+      $('status-text').textContent='Failed to parse: '+err.message;
+    }
+  });
+
+  // Search
+  const box=$('search-box'), dd=$('search-dd');
+  box.addEventListener('input',()=>{
+    clearTimeout(searchTimer);
+    const q=box.value.trim();
+    if(!q){ dd.classList.remove('open'); return; }
+    searchTimer=setTimeout(()=>renderDropdown(searchSongs(q)),100);
+  });
+  box.addEventListener('keydown',e=>{
+    const items=dd.querySelectorAll('.sr');
+    if(e.key==='ArrowDown'){ e.preventDefault(); focusedIdx=Math.min(focusedIdx+1,items.length-1); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIdx)); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); focusedIdx=Math.max(focusedIdx-1,-1); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIdx)); }
+    else if(e.key==='Enter'&&focusedIdx>=0){ items[focusedIdx]?.dispatchEvent(new MouseEvent('mousedown')); }
+    else if(e.key==='Escape'){ dd.classList.remove('open'); }
+  });
+  document.addEventListener('click',e=>{ if(!$('search-wrap').contains(e.target)) dd.classList.remove('open'); });
+
+  // URL add
+  $('url-btn').addEventListener('click',()=>{ $('url-modal').classList.add('open'); $('url-input').focus(); });
+  $('url-cancel').addEventListener('click',()=>closeUrlModal());
+  $('url-ok').addEventListener('click',()=>{
+    const raw=$('url-input').value.trim();
+    const m=raw.match(/(\d+)/);
+    if(!m){ showUrlErr('Enter an EMQ music URL or numeric ID'); return; }
+    const song=songIdx?.get(m[1]);
+    if(!song){ showUrlErr(`ID ${m[1]} not found in database`); return; }
+    addSong(song); closeUrlModal();
+  });
+  $('url-input').addEventListener('keydown',e=>{ if(e.key==='Enter') $('url-ok').click(); });
+  function closeUrlModal(){ $('url-modal').classList.remove('open'); $('url-input').value=''; $('url-err').style.display='none'; }
+  function showUrlErr(msg){ $('url-err').textContent=msg; $('url-err').style.display='block'; }
+
+  // Global apply buttons
+  $('apply-all').addEventListener('click',()=>{
+    const d=Math.max(5,parseInt($('global-dur').value)||30);
+    ranking.forEach(r=>r.duration=d); saveSession(); renderRanking();
+    toast(`Set all clips to ${d}s`);
+  });
+  $('apply-all-start').addEventListener('click',()=>{
+    const s=Math.max(0,parseInt($('global-start').value)||0);
+    ranking.forEach(r=>r.startTime=s); saveSession(); renderRanking();
+    toast(`Set all start offsets to ${s}s`);
+  });
+
+  // Save / Load
+  const openVideo=()=>{ if(!ranking.length){toast('Add songs first',true);return;} resetVideoModal(); $('vmodal-bg').classList.add('open'); };
+  $('hdr-video').addEventListener('click',openVideo);
+  $('b-video').addEventListener('click',openVideo);
+  const doSave=()=>saveToFile();
+  $('hdr-save').addEventListener('click',doSave);
+  $('b-save').addEventListener('click',doSave);
+  $('hdr-load').addEventListener('click',()=>$('load-ranking-file').click());
+  $('load-ranking-file').addEventListener('change',async e=>{ if(!e.target.files[0])return; const t=await readFileText(e.target.files[0]); loadFromFile(t); e.target.value=''; });
+
+  // Video modal
+  function resetVideoModal(){
+    $('v-settings').style.display='grid';
+    $('vm-go').style.display=''; $('vm-title').textContent='Generate Ranking Video';
+    $('vm-sub').textContent=`${ranking.length} songs · ${fmtDur(totalSecs())}`;
+    $('vm-prog').style.display='none'; $('vm-log').style.display='none';
+    $('vm-log').innerHTML=''; $('vm-bar').style.width='0';
+    $('vm-dl').classList.remove('show'); $('vm-cancel').textContent='Cancel';
+    if(blobUrl){ URL.revokeObjectURL(blobUrl); blobUrl=null; }
+  }
+  $('vm-go').addEventListener('click',()=>{ $('vm-go').style.display='none'; generateVideo().catch(e=>{ toast('Error: '+e.message,true); console.error(e); }); });
+  $('vm-cancel').addEventListener('click',()=>{ cancelEnc=true; $('vmodal-bg').classList.remove('open'); });
+}
+
+// ─────────────────────────────────────────────────────────────
+//  INIT
+// ─────────────────────────────────────────────────────────────
+bindEvents();
+startup().then(()=>{ if(songIdx){ restoreSession(); renderRanking(); } });
+</script>
+</body>
+</html>
