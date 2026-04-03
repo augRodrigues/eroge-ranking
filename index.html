@@ -863,12 +863,19 @@ async function generateVideo(){
     // Half-second fade out/in transition between songs (except last)
     if(i < entries.length - 1){
       const fadeFrames = Math.round(fps * 0.5);
-      const nextEntry = entries[i + 1];
-      const nextCover = covers.get(nextEntry.song.id)||null;
+      
+      // Fade out current frame
       for(let f=0;f<fadeFrames;f++){
         const a=f/fadeFrames;
-        drawFrame(ctx,vw,vh,song,rank,total,cover,1-a,duration);
-        ctx.fillStyle=`rgba(0,0,0,${a*a})`; ctx.fillRect(0,0,vw,vh);
+        if(mediaType === 'video'){
+          // For video, just fade to black
+          ctx.fillStyle=`rgba(0,0,0,${a})`;
+          ctx.fillRect(0,0,vw,vh);
+        } else {
+          drawFrame(ctx,vw,vh,song,rank,total,cover,1-a,duration);
+          ctx.fillStyle=`rgba(0,0,0,${a*a})`;
+          ctx.fillRect(0,0,vw,vh);
+        }
         await sleep(1000/fps);
       }
     }
