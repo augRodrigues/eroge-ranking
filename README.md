@@ -1,147 +1,141 @@
-# ♪ EMQ Ranking Builder
+# EMQ Ranking Builder
 
-A browser-based tool for building and encoding eroge music ranking videos using the [ErogeMusicQuiz](https://erogemusicquiz.com/) database.
+Browser-based ranking tool + Python/FFmpeg video renderer for
+[ErogeMusicQuiz](https://erogemusicquiz.com/) music rankings.
 
-**[→ Open the app](https://YOUR-USERNAME.github.io/eroge-ranking/)**
+## Files
 
----
+| File | Purpose |
+|---|---|
+| `index.html` | Browser app: search songs, build ranking, export playlist |
+| `db.json` | Song database (you generate this with `build_db.py`) |
+| `build_db.py` | Parses EMQ pg_dump files → `db.json` |
+| `render_video.py` | Reads `playlist.json`, renders frames with Pillow, encodes with FFmpeg |
 
-## Quick start
+## Workflow
 
-### 1. Build the song database
-
-You need the EMQ PostgreSQL dump. Run the included script:
+### 1 — Build the song database (once)
 
 ```bash
 python build_db.py /path/to/pg_dump_directory
-# or pass individual .dat files:
-python build_db.py file1.dat file2.dat file3.dat ...
+# or individual files:
+python build_db.py 3844.dat 3845.dat 3851.dat ...
 ```
 
-This outputs `db.json` (~10 MB). The script auto-detects which table each file contains — no manual file numbering needed.
+Outputs `db.json` (~10 MB). Place it next to `index.html`.
 
-> **Python 3.8+ only.** No dependencies beyond the standard library.
-
-### 2. Deploy to GitHub Pages
+### 2 — Deploy to GitHub Pages
 
 ```bash
 git init eroge-ranking && cd eroge-ranking
 cp /path/to/index.html .
 cp /path/to/db.json .
 git add . && git commit -m "init"
-git remote add origin https://github.com/YOUR-USERNAME/eroge-ranking
+git remote add origin https://github.com/YOU/eroge-ranking
 git push -u origin main
+# Settings → Pages → deploy from main / root
 ```
 
-In your repo → Settings → Pages → deploy from `main` / root.
+### 3 — Build the ranking
 
-### 3. Use the app
-
-1. Open the site — it fetches `db.json` automatically.  
-   If running locally without a server, open the page and pick `db.json` via the file picker.
+1. Open the site (or `index.html` locally with a server)
 2. Search for songs by title, game, or artist → click to add
-3. Paste an EMQ link (e.g. `https://erogemusicquiz.com/music/12345`) with the **+ URL** button
-4. Reorder by dragging cards or using ↑↓ buttons
-5. Set clip length and start offset per song, or use **Apply to all**
-6. Click **▶ Generate video** — configure resolution/FPS, then encode
+3. Paste EMQ links with the **+ URL** button
+4. Drag-to-reorder or use ↑↓ buttons
+5. Set **Clip** (seconds) and **Start at** per song, or use Apply to all
+6. In the **Local file** field on each card, enter the full path to
+   the audio file on your computer  
+   e.g. `/home/user/music/tori_no_uta.mp3`
 
----
+### 4 — Export and render
 
-## Ranking builder features
+Click **Export playlist** in the app:
+- It fetches VNDB cover image URLs (public API, no auth needed)
+- Downloads `playlist.json` with all song info embedded
 
-| Feature | Details |
-|---|---|
-| Search | Multi-term; searches title (JP+latin), game, artists |
-| Add by URL | Paste EMQ link or just the numeric ID |
-| Drag reorder | Full drag-and-drop |
-| ↑↓ buttons | For precision reorder |
-| Clip duration | Per-song, with "Apply to all" global default |
-| Start offset | Skip intros — e.g. start at 10s |
-| Local audio upload | Per-song fallback when EMQ audio fails |
-| Save/Load | Export ranking as JSON, reload later |
-| Session restore | Ranking survives page refresh (sessionStorage) |
+Then render the video:
 
----
+```bash
+# Install deps (once)
+pip install Pillow requests
+# ffmpeg must be on PATH
 
-## Video output
+python render_video.py playlist.json
+python render_video.py playlist.json --out my_ranking.mp4 --crf 18 --preset slow
+python render_video.py playlist.json --transition 0      # hard cuts
+python render_video.py playlist.json --width 1280 --height 720
+```
 
-- **Format**: WebM (VP9 + Opus) — directly uploadable to YouTube
-- **Encoding**: Real-time in-browser using Canvas + MediaRecorder
-- **Duration**: Equal to sum of all clip lengths (e.g. 300 songs × 30s = 150 min)
+## Audio files
 
-### What each frame shows
+The renderer uses **local files only** — there is no login or cookie
+handling. Set paths in the browser app (Local file field) before
+exporting, or edit `playlist.json` directly:
+
+```json
+{
+  "rank": 1,
+  "title": "Tori no Uta",
+  "local_file": "/home/user/music/tori_no_uta.mp3",
+  ...
+}
+```
+
+If a song has no `local_file`, the clip is rendered with silence.
+
+## render_video.py options
+
+```
+--out FILE          Output file (default: ranking.mp4)
+--transition SECS   Crossfade duration (default: from playlist)
+--fps N             Frame rate
+--width W           Width override
+--height H          Height override
+--crf N             H.264 CRF quality 0-51, lower = better (default 18)
+--preset NAME       ultrafast / fast / medium / slow (default fast)
+--font FILE         Bold latin TTF font
+--font-jp FILE      Japanese TTF/OTC font (NotoSansCJK recommended)
+--work-dir DIR      Temp folder for frames/clips (default: emq_work)
+--keep-clips        Keep per-song MP4 clips after encoding
+--skip-existing     Resume: skip clips already on disk
+-v, --verbose       Show FFmpeg output
+```
+
+## Video frame layout
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  [blurred game cover background]                             │
+│  [blurred game cover background, 80% dimmed]                 │
 │                                                              │
-│  ┌──────────────┐  OPENING                                  │
-│  │              │                                           │
-│  │  Game cover  │  Song Title                               │
-│  │  art panel   │  Japanese Title                           │
-│  │              │                                           │
-│  │              │  Game Name                                │
-│  │              │                                           │
-│  │  #42         │  Vocals:      Artist Name                 │
-│  └──────────────┘  Lyrics:      Lyricist Name               │
-│                    Music:       Composer Name               │
-│                                                             │
-│ ███████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0:18      │
+│  ┌─────────────┐  OPENING                                   │
+│  │  Game cover │                                            │
+│  │  art, fit   │  Song Title                                │
+│  │  in panel   │  Japanese Title                            │
+│  │             │                                            │
+│  │             │  Game Name                                 │
+│  │             │  Vocals:      Singer                       │
+│  │  #42        │  Music:       Composer                     │
+│  └─────────────┘  Arrangement: Arranger                     │
+│                   Lyrics:      Lyricist                      │
+│                                                              │
+│  ─────────────────────────────────────────────────────[bar] │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Cover art is fetched from the **VNDB API** (public, no auth needed).
+Cover art fetched from VNDB API (public, no auth).
 
-### Audio
+## Output format
 
-The tool fetches audio directly from EMQ. Since EMQ requires login, **be logged into erogemusicquiz.com in the same browser** before encoding — the browser sends your session cookie automatically.
+`.mp4` (H.264 + AAC) — directly uploadable to YouTube.  
+Use `--transition 0.5` (default) for smooth crossfades between songs.
 
-If audio fetch fails (CORS or auth issue), use the **"📁 Upload local"** button on each song card to provide an audio file you downloaded manually.
+## Tips
 
----
-
-## build_db.py details
-
-The script scans all `.dat` files in your dump directory, auto-detects which table each file (or each block within a merged file) contains, and joins:
-
-| Table detected | Used for |
-|---|---|
-| `music_title` | Song names (latin + Japanese) |
-| `music_external_link` | Audio URLs |
-| `music_source_music` | Song type (Opening/Ending/Insert/BGM) |
-| `music_source_title` | Game titles |
-| `music_source_external_link` | VNDB IDs (→ cover art) |
-| `artist_music` | Artist roles |
-| `artist_alias` | Artist names |
-
-Detection uses content fingerprints (column count, data types, value ranges) — no reliance on file naming.
-
-URLs in the database use the internal hostname `emqselfhost` — the script replaces these with `erogemusicquiz.com` automatically.
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| "db.json not found" | Run `python build_db.py` first; or use the file picker |
-| Missing table in build output | Pass more `.dat` files; check the "Unidentified blocks" hint in output |
-| No audio in video | Log into erogemusicquiz.com first; or upload local files |
-| CORS error on audio | Same — login required, or use local upload |
-| Slow encoding | Normal — it's real-time. 10 songs × 30s = 5 min of recording |
-| Output is `.webm` | To get `.mp4`: `ffmpeg -i ranking.webm -c:v libx264 -c:a aac ranking.mp4` |
-
----
-
-## File structure
-
-```
-eroge-ranking/
-├── index.html     ← The entire app (single self-contained file)
-├── db.json        ← Generated by build_db.py (you create this)
-├── build_db.py    ← Run this once to build db.json
-└── README.md
-```
+- **Japanese fonts**: install `fonts-noto-cjk` on Linux for best results  
+  `sudo apt install fonts-noto-cjk`
+- **Slow encode**: `--preset slow --crf 16` for archive quality
+- **Resume**: if interrupted, re-run with `--skip-existing`
+- **720p test**: `--width 1280 --height 720` for a quick preview encode
 
 ---
 
