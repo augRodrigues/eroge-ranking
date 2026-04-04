@@ -1,0 +1,25 @@
+{
+  "config": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "videoBitrate": "8M",
+    "audioBitrate": "320k",
+    "transitionDuration": 0.5
+  },
+  "entries": [
+    {
+      "rank": 1,
+      "song_id": "test1",
+      "title": "Test Video Song",
+      "title_jp": "テストビデオソング",
+      "game": "Test Visual Novel",
+      "artist": "Vocals: Test Singer / Music: Test Composer",
+      "type": 1,
+      "duration": 10,
+      "start_time": 0,
+      "local_file": "test_sample.webm",
+      "is_video": true
+    }
+  ]
+}

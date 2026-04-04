@@ -330,9 +330,10 @@ class VideoEncoder:
                 video_y = 10
                 
                 # Scale video to fit within video area while maintaining aspect ratio
-                # Use scale2ref for proper fitting
+                # Then pad to full resolution with black background
+                # Also extract audio from the video
                 filter_complex = (
-                    f"[0:v]scale=min({video_area_width}\\,iw*{video_area_height}/ih):min({video_area_height}\\,ih*{video_area_width}/iw)[scaled];"
+                    f"[0:v]scale=w=min({video_area_width}\\,iw*{video_area_height}/ih):h=min({video_area_height}\\,ih*{video_area_width}/iw):force_original_aspect_ratio=decrease[scaled];"
                     f"[scaled]pad={self.project.config.width}:{self.project.config.height}:{video_x}:{video_y}:black[bg]"
                 )
                 
@@ -342,11 +343,15 @@ class VideoEncoder:
                     '-ss', str(entry.start_time),
                     '-t', str(entry.duration),
                     '-filter_complex', filter_complex,
+                    '-map', '[bg]',
+                    '-map', '0:a?',
                     '-c:v', self.project.config.codec,
                     '-preset', 'ultrafast',
                     '-crf', str(self.project.config.crf),
                     '-pix_fmt', self.project.config.pixel_format,
                     '-r', str(self.project.config.fps),
+                    '-c:a', 'aac',
+                    '-b:a', self.project.config.audio_bitrate,
                     output_path
                 ]
                 
