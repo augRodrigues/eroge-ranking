@@ -2,426 +2,386 @@
 """
 EMQ Ranking Builder — Database Builder
 =======================================
-Reads the ErogeMusicQuiz pg_dump files and outputs a compact db.json
-file for use with the ranking web app.
+Reads a single plain-text PostgreSQL dump (produced by pg_dump without -Fd,
+e.g. "pg_dump -f dump.txt EMQ") and outputs a compact db.json for the
+ranking web app.
+
+The file can be 1+ GB — it is streamed line-by-line, so memory usage stays
+low (~150 MB peak for the parsed tables we actually need).
 
 Usage:
-    python build_db.py /path/to/dump/directory
-    python build_db.py /path/to/dump/directory --out db.json
-    python build_db.py file1.dat file2.dat file3.dat ...
+    python build_db.py dump.txt
+    python build_db.py dump.txt --out db.json
+    python build_db.py dump.txt -v          # verbose: show row counts as parsed
 
-The script auto-detects which table each .dat (or .txt) block contains,
-so you do NOT need to know the file numbering.
+Output:
+    db.json  (~10 MB) — place alongside index.html in your GitHub Pages repo.
 
-Output: db.json  (place alongside index.html in your GitHub Pages repo)
+Python 3.8+, no dependencies beyond the standard library.
 """
 
-import sys, os, re, json, argparse, time
+import argparse
+import json
+import re
+import sys
+import time
 from pathlib import Path
 
-# ── Schemas (column order matches pg_dump COPY output) ──────
-SCHEMAS = {
-    'artist':                     ['id', 'primary_language'],
-    'artist_alias':               ['id', 'artist_id', 'latin_alias', 'non_latin_alias', 'is_main_name'],
-    'artist_music':               ['artist_id', 'music_id', 'role', 'artist_alias_id'],
-    'category':                   ['id', 'name', 'type', 'vndb_id'],
-    'music':                      ['id', 'type', 'attributes', 'data_source'],
-    'music_external_link':        ['music_id', 'url', 'type', 'is_video', 'duration',
-                                   'submitted_by', 'sha256', 'analysis_raw'],
-    'music_source_external_link': ['music_source_id', 'url', 'type', 'name'],
-    'music_source_music':         ['music_source_id', 'music_id', 'type'],
-    'music_source_title':         ['music_source_id', 'latin_title', 'non_latin_title',
-                                   'language', 'is_main_title'],
-    'music_title':                ['music_id', 'latin_title', 'non_latin_title',
-                                   'language', 'is_main_title'],
-    'artist_artist':              ['source', 'target', 'rel'],
+
+# ── Tables we need (all others are skipped while streaming) ──────────────────
+# Maps table name → list of column names in COPY order
+NEEDED = {
+    "music_title": [
+        "music_id", "latin_title", "non_latin_title", "language", "is_main_title"
+    ],
+    "music_external_link": [
+        "music_id", "url", "type", "is_video", "duration",
+        "submitted_by", "sha256", "analysis_raw"
+    ],
+    "music_source_music": [
+        "music_source_id", "music_id", "type"
+    ],
+    "music_source_title": [
+        "music_source_id", "latin_title", "non_latin_title", "language", "is_main_title"
+    ],
+    "music_source_external_link": [
+        "music_source_id", "url", "type", "name"
+    ],
+    "artist_music": [
+        "artist_id", "music_id", "role", "artist_alias_id"
+    ],
+    "artist_alias": [
+        "id", "artist_id", "latin_alias", "non_latin_alias", "is_main_name"
+    ],
 }
 
-# Internal URL prefix → public
-_URL_IN  = 'https://emqselfhost'
-_URL_OUT = 'https://erogemusicquiz.com'
+# Internal hostname in the dump → public URL
+URL_REPLACE_FROM = "https://emqselfhost"
+URL_REPLACE_TO   = "https://erogemusicquiz.com"
 
-NEEDED_TABLES = {
-    'artist_alias', 'artist_music',
-    'music_title', 'music_external_link',
-    'music_source_music', 'music_source_title',
-    'music_source_external_link',
-}
+# Song type and role constants (for reference; not used in build)
+TYPE_LABEL = {1: "Opening", 2: "Ending", 3: "Insert Song", 4: "BGM"}
+ROLE_ORDER  = [1, 6, 2, 5, 3, 4]
 
 
-# ────────────────────────────────────────────────────────────
-#  TSV parsing
-# ────────────────────────────────────────────────────────────
-def parse_block(text, col_names):
-    rows = []
-    n = len(col_names)
-    for line in text.splitlines():
-        if not line or line == '\\.':
-            continue
-        parts = line.split('\t', n - 1)
-        while len(parts) < n:
-            parts.append('')
-        obj = {}
-        for i, col in enumerate(col_names):
-            v = parts[i]
-            obj[col] = '' if v == '\\N' else v
-        rows.append(obj)
-    return rows
-
-
-def split_blocks(text):
-    """Split a file that may contain multiple COPY blocks (separated by \\.)."""
-    parts = re.split(r'\n\\\.[ \t]*(?:\n|$)', text)
-    return [p.strip() for p in parts if p.strip()]
-
-
-# ────────────────────────────────────────────────────────────
-#  Table auto-detection
-# ────────────────────────────────────────────────────────────
-def _sample(block_text, n=40):
-    """Return up to n parsed rows from a block."""
-    lines = [l for l in block_text.splitlines() if l and l != '\\.'][:n]
-    return [l.split('\t') for l in lines]
-
-def _is_int(s):   s=s.strip(); return bool(s) and re.fullmatch(r'\d+', s) is not None
-def _is_bool(s):  return s.strip() in ('t', 'f')
-def _is_url(s):   return s.startswith('http://') or s.startswith('https://')
-def _is_lang(s):  s=s.strip(); return bool(s) and re.fullmatch(r'[a-z]{2}(-[A-Za-z]{2,5})?', s) is not None
-def _is_uuid(s):  return bool(re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', s.strip()))
-def _is_hms(s):   return bool(re.match(r'^\d{2}:\d{2}:\d{2}', s.strip()))
-
-def _col(rows, i):
-    return [r[i] for r in rows if len(r) > i]
-
-
-def detect_table(block_text):
+# ── Streaming parser ──────────────────────────────────────────────────────────
+def stream_tables(path: Path, verbose: bool):
     """
-    Return (table_name, confidence_pct) based on content fingerprints.
-    Returns (None, 0) when unrecognized.
+    Yield (table_name, {col: value, ...}) for every row in a needed table,
+    streaming the file line-by-line.
+
+    Handles:
+      - COPY public.tablename (col1, col2, ...) FROM stdin;
+      - Tab-separated data rows
+      - \\N for NULL  →  empty string
+      - Terminator \\. on its own line
     """
-    rows = _sample(block_text)
-    if len(rows) < 2:
-        return None, 0
-    ncols = max(len(r) for r in rows)
+    # Pre-compile the COPY header pattern
+    copy_re = re.compile(
+        r"^COPY public\.(\w+)\s*\(([^)]+)\)\s*FROM stdin;",
+        re.IGNORECASE
+    )
 
-    c = [_col(rows, i) for i in range(min(ncols, 10))]
+    current_table   = None   # name if inside a needed COPY block, else None
+    current_cols    = None   # column names from the COPY header
+    current_schema  = None   # column names from NEEDED (may differ in order)
+    col_map         = None   # list of indices: schema position → file column index
+    rows_parsed     = 0
+    tables_seen     = set()
 
-    def pct(vals, fn, n=20):
-        sub = vals[:n]
-        return sum(1 for v in sub if fn(v)) / len(sub) if sub else 0
+    encoding = "utf-8"
 
-    # 2-column: artist
-    if ncols == 2:
-        if pct(c[0], _is_int) > 0.9 and pct(c[1], _is_lang) > 0.7:
-            return 'artist', 95
-        return None, 0
+    with open(path, encoding=encoding, errors="replace") as fh:
+        for line in fh:
+            # Strip trailing newline (keep content)
+            line = line.rstrip("\n").rstrip("\r")
 
-    # 3-column
-    if ncols == 3:
-        all_int_c0 = pct(c[0], _is_int) > 0.85
-        all_int_c1 = pct(c[1], _is_int) > 0.85
-        all_int_c2 = pct(c[2], _is_int) > 0.85
-        all_int = all_int_c0 and all_int_c1 and all_int_c2
-        if all_int:
-            c2_ints = [int(v.strip()) for v in c[2] if _is_int(v)]
-            c1_ints = [int(v.strip()) for v in c[1] if _is_int(v)]
-            if c2_ints:
-                # music_source_music: majority of type values are 1-6
-                small_pct = sum(1 for v in c2_ints if v <= 6) / len(c2_ints)
-                if small_pct > 0.7 and (not c1_ints or max(c1_ints) > 100):
-                    return 'music_source_music', 92
-                # artist_artist: rel col is a consistently large code like 103
-                if sum(1 for v in c2_ints if v > 10) / len(c2_ints) > 0.8:
-                    return 'artist_artist', 88
-        # UUID-based → MusicBrainz (skip)
-        if pct(c[1], _is_uuid) > 0.7:
-            return 'musicbrainz_skip', 80
-        return None, 0
+            # ── End of COPY block ─────────────────────────────────────────
+            if line == "\\.":
+                if current_table and verbose:
+                    print(f"    {current_table}: {rows_parsed:,} rows")
+                current_table  = None
+                current_cols   = None
+                current_schema = None
+                col_map        = None
+                rows_parsed    = 0
+                continue
 
-    # 4-column
-    if ncols == 4:
-        # music_source_external_link: (src_id, url, type, name)
-        if pct(c[0], _is_int) > 0.9 and pct(c[1], _is_url) > 0.8:
-            return 'music_source_external_link', 93
+            # ── Inside a needed COPY block: parse data row ────────────────
+            if current_table is not None:
+                if not line:
+                    continue
+                parts = line.split("\t")
+                # Map file columns → schema columns using col_map
+                row = {}
+                for schema_i, file_i in enumerate(col_map):
+                    raw = parts[file_i] if file_i < len(parts) else ""
+                    row[current_schema[schema_i]] = "" if raw == "\\N" else raw
+                rows_parsed += 1
+                yield current_table, row
+                continue
 
-        # artist_music: 4 ints, role col in 1-9
-        if all(pct(c[i], _is_int) > 0.9 for i in range(4)):
-            roles = [int(v) for v in c[2] if _is_int(v)]
-            if roles and max(roles) <= 9:
-                return 'artist_music', 90
-            return 'music', 70
+            # ── Look for COPY header ──────────────────────────────────────
+            m = copy_re.match(line)
+            if not m:
+                continue
 
-        # category: (id, text, int, 'g...' or empty)
-        if pct(c[0], _is_int) > 0.9 and pct(c[2], _is_int) > 0.9:
-            c3_sample = [v for v in c[3][:15] if v]
-            if c3_sample and all(v.startswith('g') for v in c3_sample):
-                return 'category', 88
+            tname = m.group(1)
+            if tname not in NEEDED:
+                continue  # skip tables we don't need
 
-        # room/quiz: UUID-keyed
-        if pct(c[0], _is_uuid) > 0.8:
-            return 'room_skip', 80
+            tables_seen.add(tname)
+            file_cols   = [c.strip() for c in m.group(2).split(",")]
+            schema_cols = NEEDED[tname]
 
-        # music_vote: (music_id, user_id, vote, timestamp)
-        if pct(c[0], _is_int) > 0.9 and pct(c[1], _is_int) > 0.9:
-            if any('+' in v or re.search(r'\d{4}-\d{2}-\d{2}', v) for v in c[3][:5]):
-                return 'music_vote_skip', 75
+            # Build a mapping: for each schema column, find its index in file_cols
+            # (the dump may have different column order than our schema definition)
+            col_map_built = []
+            ok = True
+            for sc in schema_cols:
+                try:
+                    col_map_built.append(file_cols.index(sc))
+                except ValueError:
+                    print(f"  ⚠  Column '{sc}' not found in {tname} dump columns: {file_cols}")
+                    ok = False
+                    break
 
-        return None, 0
+            if not ok:
+                print(f"  ⚠  Skipping {tname} due to column mismatch")
+                continue
 
-    # 5-column
-    if ncols == 5:
-        # artist_alias / music_title / music_source_title all share
-        # (int, text, text_or_null, lang_or_text, bool)
-        if pct(c[0], _is_int) > 0.9 and pct(c[4], _is_bool) > 0.9:
-            lang_score = pct(c[3], _is_lang, 30)
-            if lang_score > 0.7:
-                # music_title vs music_source_title: distinguish by ID range
-                ids = [int(v) for v in c[0] if _is_int(v)]
-                if ids and max(ids) > 15000:
-                    return 'music_title', 92
-                else:
-                    return 'music_source_title', 90
-            else:
-                # col[3] is a name → artist_alias
-                return 'artist_alias', 88
-        return None, 0
+            current_table  = tname
+            current_cols   = file_cols
+            current_schema = schema_cols
+            col_map        = col_map_built
+            rows_parsed    = 0
 
-    # 8-column (music_external_link or edit_queue/review_queue)
-    if ncols >= 8:
-        if pct(c[1], _is_url, 15) > 0.7 and pct(c[2], _is_int) > 0.7:
-            if len(c) > 4 and pct(c[4], _is_hms, 15) > 0.6:
-                return 'music_external_link', 95
-        # edit_queue / review_queue: col[6] starts with JSON
-        if len(rows[0]) > 6 and rows[0][6].startswith('{'):
-            return 'edit_queue_skip', 80
-        return None, 0
-
-    return None, 0
-
-
-# ────────────────────────────────────────────────────────────
-#  File collection
-# ────────────────────────────────────────────────────────────
-def collect_blocks(paths, verbose):
-    """Yield (block_text, source_label, block_idx) for all input paths."""
-    for path in paths:
-        try:
-            text = Path(path).read_text(encoding='utf-8', errors='replace')
-        except Exception as e:
             if verbose:
-                print(f"  ⚠  Cannot read {path}: {e}")
-            continue
-        blocks = split_blocks(text)
-        for i, blk in enumerate(blocks):
-            if blk:
-                yield blk, Path(path).name, i
+                print(f"  → Streaming {tname} …")
+
+    return tables_seen
 
 
-# ────────────────────────────────────────────────────────────
-#  Main build
-# ────────────────────────────────────────────────────────────
-def build_db(input_paths, verbose=True):
-    def log(*a): verbose and print(*a)
+# ── Build indexes from streamed rows ──────────────────────────────────────────
+def build_db(dump_path: Path, verbose: bool):
+    print(f"\n{'='*60}")
+    print("  EMQ Ranking Builder — build_db.py")
+    print(f"{'='*60}\n")
 
-    log(f"\n{'═'*58}")
-    log("  EMQ Ranking Builder — building db.json")
-    log(f"{'═'*58}\n")
+    size_mb = dump_path.stat().st_size / 1024 / 1024
+    print(f"  Input:  {dump_path}  ({size_mb:.0f} MB)")
+    print(f"  Mode:   streaming line-by-line (low memory)\n")
 
-    # ── Step 1: detect + parse tables ────────────────────────
-    log("Step 1/4 — Detecting and parsing tables…\n")
-    tables = {}
-    unrecognized = []
+    if verbose:
+        print("  Streaming tables:")
+
     t0 = time.time()
 
-    for blk, src, idx in collect_blocks(input_paths, verbose):
-        name, conf = detect_table(blk)
-        lines_n = sum(1 for l in blk.splitlines() if l and l != '\\.')
+    # We collect each needed table's data as we stream.
+    # Only keep the columns we actually use in the join.
 
-        if name and name.endswith('_skip'):
-            continue  # known but not needed
+    # artist_alias: alias_id → {n: latin, nj: non_latin}
+    alias_idx: dict[str, dict] = {}
+    # artist_music: music_id → [{a: alias_id, r: role}]
+    am_idx: dict[str, list]    = {}
+    # music_source_title: source_id → {gt, gtj} (main title wins)
+    src_title_idx: dict[str, dict] = {}
+    # music_source_external_link: source_id → vndb_id (first VNDB link wins)
+    src_vndb_idx: dict[str, str]   = {}
+    # music_source_music: music_id → {s: source_id, st: song_type}
+    msm_idx: dict[str, dict]       = {}
+    # music_external_link: music_id → {au: url, ad: duration}
+    audio_idx: dict[str, dict]     = {}
+    # music_title rows (main only) collected for final join
+    title_rows: list[dict]         = []
 
-        if name and name in NEEDED_TABLES and name not in tables:
-            schema = SCHEMAS[name]
-            tables[name] = parse_block(blk, schema)
-            log(f"  ✓  {name:<32} {lines_n:>8,} rows    [{src} §{idx+1}]")
-        elif not name and lines_n > 50:
-            unrecognized.append((lines_n, src, idx + 1, blk[:60]))
+    tables_found: set[str] = set()
+    row_counts: dict[str, int] = {t: 0 for t in NEEDED}
 
-    missing = NEEDED_TABLES - set(tables.keys())
-    if missing:
-        log(f"\n  ⚠  Could not auto-detect: {', '.join(sorted(missing))}")
-        if unrecognized:
-            log("\n     Unidentified large blocks (one of these may be the missing table):")
-            for sz, f, i, preview in sorted(unrecognized, reverse=True)[:6]:
-                log(f"       {f} §{i}  ({sz:,} rows):  {repr(preview)}")
-        if 'music_title' in missing or 'artist_alias' in missing:
-            log("\n  FATAL: Cannot continue without music_title and artist_alias.")
-            sys.exit(1)
+    for tname, row in stream_tables(dump_path, verbose):
+        tables_found.add(tname)
+        row_counts[tname] += 1
 
-    log(f"\n  Detected {len(tables)}/{len(NEEDED_TABLES)} tables in {time.time()-t0:.1f}s")
-
-    # ── Step 2: build lookup indexes ─────────────────────────
-    log("\nStep 2/4 — Building lookup indexes…")
-
-    alias_idx = {}  # alias_id → {n, nj}
-    for r in tables.get('artist_alias', []):
-        alias_idx[r['id']] = {'n': r['latin_alias'], 'nj': r['non_latin_alias']}
-    log(f"  artist_alias: {len(alias_idx):,}")
-
-    am_idx = {}  # music_id → [{a, r}]
-    for r in tables.get('artist_music', []):
-        am_idx.setdefault(r['music_id'], []).append(
-            {'a': r['artist_alias_id'], 'r': r['role']})
-    log(f"  artist_music: {len(am_idx):,} songs")
-
-    src_title_idx = {}  # source_id → {gt, gtj}
-    for r in tables.get('music_source_title', []):
-        sid = r['music_source_id']
-        if r['is_main_title'] == 't' or sid not in src_title_idx:
-            src_title_idx[sid] = {'gt': r['latin_title'], 'gtj': r['non_latin_title']}
-    log(f"  music_source_title: {len(src_title_idx):,}")
-
-    src_vndb_idx = {}  # source_id → vndb_id
-    for r in tables.get('music_source_external_link', []):
-        if r['type'] == '1':
-            m = re.search(r'vndb\.org/(v\d+)', r['url'])
-            if m and r['music_source_id'] not in src_vndb_idx:
-                src_vndb_idx[r['music_source_id']] = m.group(1)
-    log(f"  source→vndb: {len(src_vndb_idx):,}")
-
-    msm_idx = {}  # music_id → {s: source_id, st: song_type}
-    for r in tables.get('music_source_music', []):
-        mid = r['music_id']
-        if mid not in msm_idx:
-            msm_idx[mid] = {
-                's': r['music_source_id'],
-                'st': int(r['type']) if r['type'].isdigit() else 0,
+        if tname == "artist_alias":
+            alias_idx[row["id"]] = {
+                "n":  row["latin_alias"],
+                "nj": row["non_latin_alias"],
             }
-    log(f"  music_source_music: {len(msm_idx):,}")
 
-    audio_idx = {}  # music_id → {au: url, ad: duration}
-    for r in tables.get('music_external_link', []):
-        mid = r['music_id']
-        if r['type'] == '2' and mid not in audio_idx:
-            url = r['url'].replace(_URL_IN, _URL_OUT)
-            audio_idx[mid] = {'au': url, 'ad': r['duration']}
-    log(f"  music_external_link: {len(audio_idx):,}")
+        elif tname == "artist_music":
+            mid = row["music_id"]
+            if mid not in am_idx:
+                am_idx[mid] = []
+            am_idx[mid].append({"a": row["artist_alias_id"], "r": row["role"]})
 
-    # ── Step 3: join song records ─────────────────────────────
-    log("\nStep 3/4 — Joining song records…")
-    songs = []
-    seen = set()
+        elif tname == "music_source_title":
+            sid = row["music_source_id"]
+            if row["is_main_title"] == "t" or sid not in src_title_idx:
+                src_title_idx[sid] = {
+                    "gt":  row["latin_title"],
+                    "gtj": row["non_latin_title"],
+                }
 
-    for r in tables.get('music_title', []):
-        if r['is_main_title'] != 't':
+        elif tname == "music_source_external_link":
+            if row["type"] == "1":
+                m = re.search(r"vndb\.org/(v\d+)", row["url"])
+                if m:
+                    sid = row["music_source_id"]
+                    if sid not in src_vndb_idx:
+                        src_vndb_idx[sid] = m.group(1)
+
+        elif tname == "music_source_music":
+            mid = row["music_id"]
+            if mid not in msm_idx:
+                msm_idx[mid] = {
+                    "s":  row["music_source_id"],
+                    "st": int(row["type"]) if row["type"].isdigit() else 0,
+                }
+
+        elif tname == "music_external_link":
+            if row["type"] == "2":
+                mid = row["music_id"]
+                if mid not in audio_idx:
+                    url = row["url"].replace(URL_REPLACE_FROM, URL_REPLACE_TO)
+                    audio_idx[mid] = {
+                        "au": url,
+                        "ad": row["duration"],
+                    }
+
+        elif tname == "music_title":
+            if row["is_main_title"] == "t":
+                title_rows.append(row)
+
+    elapsed = time.time() - t0
+
+    # ── Report what was found ────────────────────────────────────────────────
+    print(f"\n  Streaming complete in {elapsed:.1f}s\n")
+    missing = set(NEEDED) - tables_found
+    if missing:
+        print(f"  ⚠  Tables NOT found in dump: {', '.join(sorted(missing))}")
+        print("     Check that this is a full EMQ dump (pg_dump -f dump.txt EMQ)\n")
+    else:
+        print("  All 7 needed tables found.\n")
+
+    print("  Row counts:")
+    for t, n in sorted(row_counts.items()):
+        mark = "✓" if n > 0 else "✗"
+        print(f"    {mark}  {t:<35} {n:>8,}")
+
+    if not title_rows:
+        print("\nERROR: music_title has no main-title rows. Cannot build db.json.")
+        sys.exit(1)
+
+    # ── Join song records ────────────────────────────────────────────────────
+    print(f"\n  Joining {len(title_rows):,} song records…")
+    songs: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for row in title_rows:
+        mid = row["music_id"]
+        if mid in seen_ids:
             continue
-        mid = r['music_id']
-        if mid in seen:
-            continue
-        seen.add(mid)
+        seen_ids.add(mid)
 
-        src_info = msm_idx.get(mid, {})
-        sid = src_info.get('s')
-        st = src_info.get('st', 0)
-        src_t = src_title_idx.get(sid, {}) if sid else {}
-        vndb = src_vndb_idx.get(sid) if sid else None
-        audio = audio_idx.get(mid, {})
+        src      = msm_idx.get(mid, {})
+        sid      = src.get("s")
+        st       = src.get("st", 0)
+        src_t    = src_title_idx.get(sid, {}) if sid else {}
+        vndb_id  = src_vndb_idx.get(sid)      if sid else None
+        audio    = audio_idx.get(mid, {})
 
-        # Build artists list (deduplicate alias IDs)
-        artist_list = []
-        seen_alias = set()
-        for e in am_idx.get(mid, []):
-            aid = e['a']
-            if aid in seen_alias:
+        # Build artists list, deduplicate by (alias_id, role) so the same
+        # artist can appear multiple times if they hold multiple roles.
+        artist_entries = am_idx.get(mid, [])
+        artists: list[dict] = []
+        seen_alias_role: set[tuple] = set()
+        for e in artist_entries:
+            aid  = e["a"]
+            role = int(e["r"]) if e["r"].isdigit() else 0
+            if (aid, role) in seen_alias_role:
                 continue
-            seen_alias.add(aid)
+            seen_alias_role.add((aid, role))
             al = alias_idx.get(aid)
-            if al and al['n']:
-                entry = {'n': al['n'], 'r': int(e['r']) if str(e['r']).isdigit() else 0}
-                if al['nj']:
-                    entry['nj'] = al['nj']
-                artist_list.append(entry)
+            if al and al["n"]:
+                entry: dict = {"n": al["n"], "r": role}
+                if al["nj"]:
+                    entry["nj"] = al["nj"]
+                artists.append(entry)
 
-        song = {
-            'id': mid,
-            't':   r['latin_title'],
-            'tj':  r['non_latin_title'],
-            'gt':  src_t.get('gt', ''),
-            'gtj': src_t.get('gtj', ''),
-            'st':  st,
-            'vid': vndb,
-            'au':  audio.get('au'),
-            'ad':  audio.get('ad'),
-            'ar':  artist_list,
+        song: dict = {
+            "id":  mid,
+            "t":   row["latin_title"],
+            "tj":  row["non_latin_title"],
+            "gt":  src_t.get("gt", ""),
+            "gtj": src_t.get("gtj", ""),
+            "st":  st,
+            "vid": vndb_id,
+            "au":  audio.get("au"),
+            "ad":  audio.get("ad"),
+            "ar":  artists,
         }
 
         # Strip empty/null optional fields to save space
-        for k in ('tj', 'gtj', 'vid', 'au', 'ad'):
+        for k in ("tj", "gtj", "vid", "au", "ad"):
             if not song.get(k):
                 song.pop(k, None)
-        if not song.get('ar'):
-            song.pop('ar', None)
+        if not song.get("ar"):
+            song.pop("ar", None)
 
         songs.append(song)
 
-    log(f"  {len(songs):,} songs built")
+    print(f"  Built {len(songs):,} songs.")
 
-    # ── Step 4: output ────────────────────────────────────────
-    output = {
-        'version': 1,
-        'built': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'count': len(songs),
-        'songs': songs,
+    # Stats
+    has_vndb  = sum(1 for s in songs if s.get("vid"))
+    has_audio = sum(1 for s in songs if s.get("au"))
+    has_ar    = sum(1 for s in songs if s.get("ar"))
+    print(f"\n  Coverage:")
+    print(f"    VNDB IDs   : {has_vndb:>8,} / {len(songs):,}")
+    print(f"    Audio URLs : {has_audio:>8,} / {len(songs):,}")
+    print(f"    Artists    : {has_ar:>8,} / {len(songs):,}")
+
+    return {
+        "version": 1,
+        "built":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "count":   len(songs),
+        "songs":   songs,
     }
-    return output
 
 
-# ────────────────────────────────────────────────────────────
-#  CLI
-# ────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(
-        description='Build db.json from EMQ pg_dump .dat files',
-        epilog=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('inputs', nargs='+',
-        help='pg_dump directory, or individual .dat / .txt files')
-    ap.add_argument('--out', default='db.json', metavar='FILE',
-        help='Output path (default: db.json)')
-    ap.add_argument('-q', '--quiet', action='store_true')
+        description="Build db.json from a plain-text pg_dump SQL file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    ap.add_argument("dump", metavar="dump.txt",
+                    help="Plain-text pg_dump file (pg_dump -f dump.txt EMQ)")
+    ap.add_argument("--out", default="db.json", metavar="FILE",
+                    help="Output path (default: db.json)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="Print table names as they are streamed")
     args = ap.parse_args()
 
-    paths = []
-    for inp in args.inputs:
-        p = Path(inp)
-        if p.is_dir():
-            dat = sorted(p.glob('*.dat'))
-            if not dat:
-                dat = sorted(p.glob('*.txt'))
-            paths.extend(dat)
-            if not args.quiet:
-                print(f"  Directory {p}: {len(dat)} file(s)")
-        elif p.is_file():
-            paths.append(p)
-        else:
-            print(f"Warning: {inp} not found", file=sys.stderr)
+    dump_path = Path(args.dump)
+    if not dump_path.is_file():
+        sys.exit(f"ERROR: File not found: {args.dump}")
 
-    if not paths:
-        print("Error: no input files found.", file=sys.stderr)
-        sys.exit(1)
+    db = build_db(dump_path, args.verbose)
 
-    db = build_db(paths, verbose=not args.quiet)
+    out_path = Path(args.out)
+    print(f"\n  Writing {out_path} …", end="", flush=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, separators=(",", ":"))
+    size_mb = out_path.stat().st_size / 1024 / 1024
+    print(f" done  ({size_mb:.1f} MB)")
 
-    out = Path(args.out)
-    with open(out, 'w', encoding='utf-8') as f:
-        json.dump(db, f, ensure_ascii=False, separators=(',', ':'))
-
-    size_mb = out.stat().st_size / 1024 / 1024
-    if not args.quiet:
-        print(f"\n{'═'*58}")
-        print(f"  ✓ {out}  —  {size_mb:.1f} MB  —  {db['count']:,} songs")
-        print(f"{'═'*58}")
-        print(f"\n  → Copy db.json alongside index.html in your GitHub repo\n")
+    print(f"\n{'='*60}")
+    print(f"  ✓  {out_path}  ({size_mb:.1f} MB, {db['count']:,} songs)")
+    print(f"{'='*60}")
+    print(f"\n  → Place db.json alongside index.html in your GitHub repo.\n")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
