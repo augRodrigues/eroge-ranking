@@ -1461,7 +1461,7 @@ def main():
     if downloaded_count:
         print(f"    New downloads: {downloaded_count} to media/")
     if used_cached_count:
-        print(f"    Used from cache: {used_cached_count} audio file(s)")
+        print(f"    Used from cache: {used_cached_count} media file(s)")
     if no_audio:
         print(f"    Missing media: {no_audio} song(s)")
     print(f"    Total clips: {len(clip_paths)}")
