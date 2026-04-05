@@ -639,7 +639,7 @@ def load_auth_session(cookie_file=None, token=None):
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 EMQ-Ranking-Builder/5",
-        "Accept": "audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
+        "Accept": "video/webm,video/mp4,audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://erogemusicquiz.com/",
@@ -673,9 +673,9 @@ def load_auth_session(cookie_file=None, token=None):
     return session
 
 
-def download_audio_file(audio_url, dest_path, session):
-    """Download audio file from authenticated endpoint with resume support."""
-    if not audio_url:
+def download_media_file(media_url, dest_path, session, media_type="audio"):
+    """Download media file (audio or video) from authenticated endpoint."""
+    if not media_url:
         return None
     
     # Check if file already exists and is valid
@@ -684,17 +684,18 @@ def download_audio_file(audio_url, dest_path, session):
         return dest_path
     
     try:
-        print(f"    Downloading: {audio_url.split('/')[-1][:50]}...")
+        file_type = "Video" if media_type == "video" else "Audio"
+        print(f"    Downloading {file_type}: {media_url.split('/')[-1][:50]}...")
         
         headers = {
             "Range": "bytes=0-",
-            "Accept": "audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
+            "Accept": "video/webm,video/mp4,audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
             "Referer": "https://erogemusicquiz.com/",
             "Origin": "https://erogemusicquiz.com",
         }
         
         # Download the file with streaming
-        resp = session.get(audio_url, timeout=120, stream=True, headers=headers)
+        resp = session.get(media_url, timeout=120, stream=True, headers=headers)
         
         if resp.status_code == 401:
             print("    ✗ Authentication failed (401). Cookies may be expired.")
@@ -703,7 +704,7 @@ def download_audio_file(audio_url, dest_path, session):
             print("    ✗ Access forbidden (403). Check your permissions.")
             return None
         if resp.status_code == 404:
-            print("    ✗ Audio URL not found (404).")
+            print("    ✗ Media URL not found (404).")
             return None
         
         resp.raise_for_status()
@@ -727,18 +728,41 @@ def download_audio_file(audio_url, dest_path, session):
                             print(f"\r    Downloading: {percent:.1f}%", end="", flush=True)
         
         if total_size:
-            print(f"\r    Downloaded: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
+            print(f"\r    Downloaded {file_type}: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
         else:
-            print(f"\r    Downloaded: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
+            print(f"\r    Downloaded {file_type}: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
         
         return dest_path
         
     except requests.exceptions.RequestException as e:
         print(f"    ✗ Download failed: {e}")
-        # Clean up partial download
         if dest_path and dest_path.exists():
             dest_path.unlink()
         return None
+
+
+def get_media_type_from_url(url: str) -> tuple[str, str]:
+    """
+    Determine media type and folder from URL.
+    Returns (folder_name, extension)
+    folder: 'video' or 'audio'
+    """
+    url_lower = url.lower()
+    
+    # Video extensions (including webm)
+    if url_lower.endswith('.webm'):
+        return 'video', '.webm'
+    if any(url_lower.endswith(ext) for ext in ['.mp4', '.mkv', '.avi', '.mov', '.m4v', '.wmv', '.flv']):
+        return 'video', Path(url).suffix.lower()
+    
+    # Audio extensions (weba = audio webm)
+    if url_lower.endswith('.weba'):
+        return 'audio', '.weba'
+    if any(url_lower.endswith(ext) for ext in ['.mp3', '.ogg', '.opus', '.m4a', '.aac', '.flac', '.wav']):
+        return 'audio', Path(url).suffix.lower()
+    
+    # Default to audio for unknown
+    return 'audio', '.mp3'
 
 
 def resolve_media_path_persistent(entry, playlist_path, audio_session, audio_cache, video_cache):
@@ -764,34 +788,30 @@ def resolve_media_path_persistent(entry, playlist_path, audio_session, audio_cac
                 if cand.is_file():
                     return cand, "local", False
     
-    # 2. Try to get from audio_url with caching
-    audio_url = entry.get("audio_url")
+    # 2. Try to get from audio URL - check multiple possible field names
+    audio_url = entry.get("audio_url") or entry.get("au") or entry.get("url")
+    
+    if not audio_url:
+        audio_url = entry.get("media_url") or entry.get("audio")
+    
     if audio_url:
+        # Determine media type and correct cache folder
+        media_type, ext = get_media_type_from_url(audio_url)
+        
+        # Choose the correct cache folder
+        if media_type == 'video':
+            cache_folder = video_cache
+        else:
+            cache_folder = audio_cache
+        
         # Create consistent filename from URL hash
         url_hash = hashlib.md5(audio_url.encode()).hexdigest()[:16]
+        cache_path = cache_folder / f"{url_hash}{ext}"
         
-        # Determine extension
-        ext = ".mp3"
-        if ".mp3" in audio_url.lower():
-            ext = ".mp3"
-        elif ".ogg" in audio_url.lower():
-            ext = ".ogg"
-        elif ".opus" in audio_url.lower():
-            ext = ".opus"
-        elif ".m4a" in audio_url.lower():
-            ext = ".m4a"
-        elif ".webm" in audio_url.lower():
-            ext = ".webm"
-        elif ".mp4" in audio_url.lower():
-            ext = ".mp4"
-        
-        # Check in audio cache
-        cache_path = audio_cache / f"{url_hash}{ext}"
-        
-        # Also try to find by song ID (alternative naming)
-        song_id = entry.get("id", "")
+        # Also try to find by song ID
+        song_id = entry.get("id", "") or entry.get("song_id", "")
         if song_id:
-            alt_path = audio_cache / f"song_{song_id}{ext}"
+            alt_path = cache_folder / f"song_{song_id}{ext}"
             if alt_path.is_file() and not cache_path.is_file():
                 cache_path = alt_path
         
@@ -801,9 +821,11 @@ def resolve_media_path_persistent(entry, playlist_path, audio_session, audio_cac
         
         # Otherwise download if we have a session
         if audio_session:
-            downloaded = download_audio_file(audio_url, cache_path, audio_session)
+            downloaded = download_media_file(audio_url, cache_path, audio_session, media_type)
             if downloaded and downloaded.is_file():
                 return downloaded, "downloaded", False
+        else:
+            print(f"    No session available to download {audio_url[:50]}...")
     
     return None, "missing", False
 
@@ -1086,7 +1108,7 @@ def concat_xfade(clips, durations, trans, out, verbose):
             "-preset",
             "fast",
             "-crf",
-            "18",
+            "24",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
@@ -1133,7 +1155,7 @@ def main():
                     help="Output width (default: from playlist or 1920)")
     ap.add_argument("--height", default=None, type=int,
                     help="Output height (default: from playlist or 1080)")
-    ap.add_argument("--crf", default=18, type=int,
+    ap.add_argument("--crf", default=24, type=int,
                     help="CRF quality (default: 18)")
     ap.add_argument("--preset", default="slow",
                     choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "veryslow"],
