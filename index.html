@@ -374,7 +374,7 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
     1. Download playlist.json (button below)<br>
     2. Put your media files (webm/mp4/mp3/ogg &hellip;) in the <strong>same folder</strong> as <code>render_video.py</code> (or next to <code>playlist.json</code>). Names must match what you picked in the app (basename only &mdash; browsers do not expose full paths).<br>
     3. Run: <code>python render_video.py playlist.json</code><br><br>
-    Video files play in the main 16:9 window; audio-only files show a &ldquo;sound only&rdquo; panel. Use export options for letterbox vs stretch when sources are not 16:9.
+    Export pulls VN titles (romaji + Japanese), developer list, and release date from VNDB when a VN id is present. Video plays in the main 16:9 window; audio-only clips use a sound-only panel. Letterbox vs stretch is in the export options.
   </div>
   <div class="xbtns">
     <button class="xdl" id="xdl">&#8659; Download playlist.json</button>
@@ -552,21 +552,45 @@ function render(){
   }
 }
 
-// VNDB cover resolution
-const cvCache=new Map();
-async function resolveCover(vid){
+// VNDB: cover + VN metadata (titles, developers, release)
+const vnCache=new Map();
+function normalizeReleased(s){
+  if(!s||s==='TBA'||s==='unknown')return'';
+  const t=String(s);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(t))return t;
+  if(/^\d{4}-\d{2}$/.test(t))return t+'-01';
+  if(/^\d{4}$/.test(t))return t+'-01-01';
+  return t;
+}
+async function resolveVN(vid){
   if(!vid)return null;
   const key=String(vid).replace(/^v/i,'');
-  if(cvCache.has(key))return cvCache.get(key);
+  if(vnCache.has(key))return vnCache.get(key);
   try{
     const r=await fetch('https://api.vndb.org/kana/vn',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({filters:['id','=','v'+key],fields:'image.url,image.sexual'})});
-    if(!r.ok)throw 0;
+      body:JSON.stringify({filters:['id','=','v'+key],
+        fields:'image.url,image.sexual,title,alttitle,titles{lang,title,latin,main},released,developers{name}'})});
+    if(!r.ok)throw new Error('vn');
     const d=await r.json();
-    const url=d.results?.[0]?.image?.url||null;
-    cvCache.set(key,url);return url;
-  }catch{cvCache.set(key,null);return null;}
+    const vn=d.results?.[0];
+    if(!vn){vnCache.set(key,null);return null;}
+    let jp=(vn.alttitle||'').trim();
+    if(!jp&&(vn.titles||[]).length){
+      const ja=vn.titles.find(t=>t.lang==='ja');
+      if(ja&&ja.title)jp=String(ja.title).trim();
+    }
+    const dev=(vn.developers||[]).map(p=>p.name).filter(Boolean).join(', ');
+    const out={
+      cover_url:vn.image?.url||null,
+      vn_romaji:(vn.title||'').trim(),
+      vn_title_jp:jp,
+      vn_developers:dev,
+      vn_released:normalizeReleased(vn.released),
+    };
+    vnCache.set(key,out);
+    return out;
+  }catch(e){vnCache.set(key,null);return null;}
 }
 
 // Export
@@ -579,7 +603,7 @@ async function doExport(){
 
   $('xsettings').style.display='none';$('xgo').style.display='none';
   $('xprog').style.display='block';$('xsl').style.display='block';
-  $('xmtitle').textContent='Resolving Cover Art…';
+  $('xmtitle').textContent='Resolving VNDB…';
 
   const sl=$('xsl');sl.innerHTML='';const ses=[];
   ordered.forEach((entry,i)=>{
@@ -595,13 +619,14 @@ async function doExport(){
     const{s,dur,st,lp}=ordered[i];
     const origRank=ranking.indexOf(ordered[i])+1;
     $('xbar').style.width=((i+1)/ordered.length*100).toFixed(1)+'%';
-    $('xpst').textContent='Resolving covers… '+(i+1)+'/'+ordered.length;
-    let cover=null;
+    $('xpst').textContent='Resolving VNDB… '+(i+1)+'/'+ordered.length;
+    let vn=null;
     if(s.vid){
       ses[i].textContent='⌛';
-      cover=await resolveCover(s.vid);
-      ses[i].textContent=cover?'✓':'–';
-      ses[i].style.color=cover?'var(--grn)':'var(--mu)';
+      vn=await resolveVN(s.vid);
+      const ok=vn&&(vn.cover_url||vn.vn_romaji);
+      ses[i].textContent=ok?'✓':'–';
+      ses[i].style.color=ok?'var(--grn)':'var(--mu)';
     }else{ses[i].textContent='–';ses[i].style.color='var(--mu2)';}
     const artists=(s.ar||[]).map(a=>({name:a.n,name_jp:a.nj||'',role_id:a.r,role:RL[a.r]||('Role '+a.r)}));
     entries.push({
@@ -609,7 +634,9 @@ async function doExport(){
       id:String(s.id),title:s.t||'',title_jp:s.tj||'',
       game:s.gt||'',game_jp:s.gtj||'',
       song_type:TL[s.st]||'Unknown',song_type_id:s.st||0,
-      vndb_id:s.vid||null,cover_url:cover,
+      vndb_id:s.vid||null,cover_url:vn?.cover_url||null,
+      vn_romaji:vn?.vn_romaji||'',vn_title_jp:vn?.vn_title_jp||'',
+      vn_developers:vn?.vn_developers||'',vn_released:vn?.vn_released||'',
       local_file:lp||null,
       duration:dur,start_time:st,
       artists,
@@ -620,7 +647,7 @@ async function doExport(){
 
   const aspect=$('xaspect').value==='stretch'?'stretch':'letterbox';
   const pl={
-    version:4,exported_at:new Date().toISOString(),
+    version:5,exported_at:new Date().toISOString(),
     total_songs:entries.length,
     total_duration_secs:ordered.reduce((s,r)=>s+r.dur,0),
     settings:{width:W,height:H,fps,transition:trans,direction:dir,video_aspect_mode:aspect},
@@ -628,7 +655,7 @@ async function doExport(){
   };
   pjson=JSON.stringify(pl,null,2);
   $('xbar').style.width='100%';
-  $('xpst').textContent='Done — '+entries.length+' songs, '+entries.filter(e=>e.cover_url).length+' covers resolved';
+  $('xpst').textContent='Done — '+entries.length+' songs, '+entries.filter(e=>e.cover_url).length+' covers';
   $('xmtitle').textContent='Playlist Ready';
   $('xinfo').style.display='block';
   $('xdl').classList.add('show');

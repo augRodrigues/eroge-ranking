@@ -20,10 +20,12 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 try:
@@ -38,18 +40,18 @@ except ImportError:
 
 
 # ─── CONSTANTS ────────────────────────────────────────────────────────────────
-TYPE_LABEL = {1: "Opening", 2: "Ending", 3: "Insert Song", 4: "BGM", 0: "Unknown"}
 TYPE_COLOR = {1: "#e8c547", 2: "#3ecfac", 3: "#6ba4f5", 4: "#a48ef8", 0: "#7a7a98"}
-ROLE_ORDER = [1, 6, 2, 5, 3, 4]
-ROLE_LABEL = {
-    1: "Vocals",
-    2: "Music",
-    3: "Performer",
-    4: "Director",
-    5: "Arrangement",
-    6: "Lyrics",
-}
-
+TYPE_ABBR = {1: "OP", 2: "ED", 3: "INS", 4: "BGM", 0: "OTHER"}
+# UI: cool cyan/blue accent (does not compete with video)
+UI_CYAN = (45, 180, 230, 255)
+UI_CYAN_DIM = (45, 180, 230, 160)
+UI_BLUE_GLOW = (55, 140, 220, 200)
+LABEL_GREY = (130, 138, 160, 255)
+TITLE_WHITE = (248, 250, 255, 255)
+CAL_C = (255, 82, 98, 255)
+CAL_A = (52, 210, 198, 255)
+CAL_L = (255, 152, 58, 255)
+FRAME_PAD = 3
 VIDEO_EXT = {".webm", ".mp4", ".mkv", ".avi", ".mov", ".m4v", ".wmv", ".flv"}
 AUDIO_EXT = {".mp3", ".ogg", ".opus", ".m4a", ".aac", ".flac", ".wav"}
 
@@ -122,12 +124,39 @@ def load_fonts(args, W, H):
         game=lf(max(15, H // 56)),
         role_lbl=lf(max(11, H // 84)),
         role_nm=lf(max(13, H // 72)),
-        rank_big=lf(max(48, H // 22)),
-        bar_title=lf(max(26, H // 20)),
-        sound=lf(max(36, H // 14)),
+        rank_big=lf(max(40, H // 24)),
+        bar_title=lf(max(24, H // 22)),
+        bar_cal=lf(max(15, H // 62)),
+        sound=lf(max(34, H // 15)),
+        type_badge=lf(max(20, H // 38)),
         lat_path=lat_path,
         jp_path=jp_path,
     )
+
+
+def wrap_text_centered(draw, text, font, cx, y, max_w, line_h, fill, max_lines=3):
+    if not text:
+        return 0
+    words = text.split(" ")
+    line, lines = "", []
+    for w in words:
+        test = (line + " " + w).strip()
+        bb = font.getbbox(test)
+        if bb[2] - bb[0] > max_w and line:
+            lines.append(line)
+            line = w
+            if len(lines) >= max_lines:
+                break
+        else:
+            line = test
+    if line and len(lines) < max_lines:
+        lines.append(line)
+    h = 0
+    for i, ln in enumerate(lines):
+        w = _text_width(font, ln)
+        draw.text((cx - w // 2, y + i * line_h), ln, font=font, fill=fill)
+        h += line_h
+    return h
 
 
 def wrap_text(draw, text, font, x, y, max_w, line_h, fill, max_lines=3):
@@ -153,16 +182,19 @@ def wrap_text(draw, text, font, x, y, max_w, line_h, fill, max_lines=3):
 
 
 def layout_rects(W, H):
-    """Main 16:9 video window (top-left column), right panel, bottom info bar."""
+    """~82% width main column: 16:9 video, progress line, bottom bar; narrow right panel."""
     margin = max(12, int(W * 0.018))
-    rw = int(W * 0.235)
+    rw = int(W * 0.18)
     left_w = W - rw - margin
     left_x0 = margin
-    bh = max(int(H * 0.125), 110)
-    top_m = max(10, int(H * 0.022))
-    gap_v = max(8, int(H * 0.012))
+    bh = max(int(H * 0.145), 118)
+    top_m = max(10, int(H * 0.02))
+    prog_h = max(4, int(H * 0.0055))
+    gap_after_vid = max(4, int(H * 0.007))
+    gap_prog_bar = max(7, int(H * 0.012))
 
-    avail_h = H - top_m - bh - gap_v - margin
+    bottom_reserved = gap_after_vid + prog_h + gap_prog_bar + bh + margin
+    avail_h = H - top_m - bottom_reserved
     avail_w = left_w - margin
     ar = avail_w / max(avail_h, 1)
     if ar > 16 / 9:
@@ -174,16 +206,18 @@ def layout_rects(W, H):
 
     vx = left_x0 + (avail_w - vw) // 2
     vy = top_m
-    bar_y = vy + vh + gap_v
-    bar_h = H - bar_y - margin
-    bar_h = min(bar_h, bh)
+    prog_y = vy + vh + gap_after_vid
+    bar_y = prog_y + prog_h + gap_prog_bar
+    bar_h = bh
     bar_x0 = left_x0
 
-    rx0 = W - rw - margin + int(rw * 0.06)
-    rx1 = W - margin - int(rw * 0.06)
+    rx0 = W - rw - margin + max(4, int(rw * 0.05))
+    rx1 = W - margin - max(4, int(rw * 0.05))
     panel_w = rx1 - rx0
-    # Bottom bar only spans the left column (never under the right panel)
     bar_w = max(120, rx0 - bar_x0 - 12)
+
+    prog_x = vx - FRAME_PAD
+    prog_w = vw + 2 * FRAME_PAD
 
     return dict(
         W=W,
@@ -204,7 +238,151 @@ def layout_rects(W, H):
         panel_w=panel_w,
         margin=margin,
         top_m=top_m,
+        prog_x=prog_x,
+        prog_y=prog_y,
+        prog_w=prog_w,
+        prog_h=prog_h,
     )
+
+
+def _text_width(font, text):
+    try:
+        return int(font.getlength(text))
+    except Exception:
+        bb = font.getbbox(text)
+        return bb[2] - bb[0]
+
+
+def draw_text_segments(draw, x, y, segments, font):
+    cx = x
+    for text, fill in segments:
+        if not text:
+            continue
+        draw.text((cx, y), text, font=font, fill=fill)
+        cx += _text_width(font, text)
+
+
+def segments_width(font, segments):
+    return sum(_text_width(font, t) for t, _ in segments if t)
+
+
+def draw_hcentered_line(draw, text, font, cx, y, fill):
+    if not text:
+        return
+    w = _text_width(font, text)
+    draw.text((cx - w // 2, y), text, font=font, fill=fill)
+
+
+def fit_text_width(font, text, max_w):
+    if _text_width(font, text) <= max_w:
+        return text
+    ell = "…"
+    t = text
+    while t and _text_width(font, t + ell) > max_w:
+        t = t[:-1]
+    return (t + ell) if t else ell
+
+
+def build_cal_segments(artists):
+    """Composer / Arranger / Lyricist with merged roles per name."""
+    role_letter = {2: "C", 5: "A", 6: "L"}
+    colors = {"C": CAL_C, "A": CAL_A, "L": CAL_L}
+    order = {"C": 0, "A": 1, "L": 2}
+    nm_roles = defaultdict(set)
+    for a in artists or []:
+        rid = a.get("role_id")
+        if rid not in role_letter:
+            continue
+        nm = (a.get("name") or "").strip()
+        if nm:
+            nm_roles[nm].add(role_letter[rid])
+
+    def name_key(n):
+        return (min(order[r] for r in nm_roles[n]), n.lower())
+
+    blocks = []
+    for nm in sorted(nm_roles.keys(), key=name_key):
+        letters = sorted(nm_roles[nm], key=lambda r: order[r])
+        segs = []
+        for i, letter in enumerate(letters):
+            if i:
+                segs.append((", ", TITLE_WHITE))
+            segs.append((letter, colors[letter]))
+        segs.append((" " + nm, TITLE_WHITE))
+        blocks.append(segs)
+    flat = []
+    sep = (180, 188, 210, 255)
+    for bi, block in enumerate(blocks):
+        if bi:
+            flat.append((" / ", sep))
+        flat.extend(block)
+    return flat
+
+
+def draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, accent_rgb, fonts):
+    inner = Image.new("RGBA", (vw, vh), (8, 10, 20, 255))
+    has_cover = cover_img is not None
+
+    if has_cover:
+        sc = max(vw / cover_img.width, vh / cover_img.height) * 1.05
+        bw, bh = int(cover_img.width * sc), int(cover_img.height * sc)
+        bg = cover_img.resize((bw, bh), Image.LANCZOS)
+        bg = bg.crop(((bw - vw) // 2, (bh - vh) // 2, (bw - vw) // 2 + vw, (bh - vh) // 2 + vh))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=max(4, vw // 35)))
+        bg = ImageEnhance.Brightness(bg).enhance(0.32)
+        bg = ImageEnhance.Color(bg).enhance(0.75)
+        inner = bg.convert("RGBA")
+
+    # Radial vignette (darken toward edges), low-res then upscale
+    pxw, pxh = max(32, vw // 6), max(32, vh // 6)
+    vig_small = Image.new("L", (pxw, pxh), 0)
+    mx, my = pxw / 2.0, pxh / 2.0
+    max_d = math.hypot(mx, my) + 0.001
+    for y in range(pxh):
+        for x in range(pxw):
+            d = math.hypot(x - mx, y - my) / max_d
+            v = int(min(255, 210 * (d**1.2)))
+            vig_small.putpixel((x, y), v)
+    vig = vig_small.resize((vw, vh), Image.LANCZOS)
+    black = Image.new("RGBA", (vw, vh), (0, 0, 0, 0))
+    black.putalpha(vig)
+    inner = Image.alpha_composite(inner, black)
+
+    d = ImageDraw.Draw(inner)
+    cx, cy = vw // 2, vh // 2
+    max_r = int(math.hypot(vw / 2, vh / 2)) - 6
+    for k in range(4):
+        ri = int(max_r * (0.28 + k * 0.18))
+        if ri < 8:
+            continue
+        a = 90 + k * 35
+        d.ellipse(
+            [cx - ri, cy - ri, cx + ri, cy + ri],
+            outline=(*accent_rgb, min(255, a)),
+            width=2,
+        )
+
+    R1, R2 = max_r - 20, max_r - 6
+    n_ticks = 56
+    for i in range(n_ticks):
+        ang = 2 * math.pi * i / n_ticks - math.pi / 2
+        x1 = cx + R1 * math.cos(ang)
+        y1 = cy + R1 * math.sin(ang)
+        x2 = cx + R2 * math.cos(ang)
+        y2 = cy + R2 * math.sin(ang)
+        d.line([(x1, y1), (x2, y2)], fill=(*accent_rgb, 140), width=1)
+
+    msg = "SOUND ONLY"
+    f = fonts["sound"]
+    bb = f.getbbox(msg)
+    tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    tx = (vw - tw) // 2
+    ty = (vh - th) // 2
+    for ox, oy in ((3, 3), (2, 2), (1, 1)):
+        d.text((tx + ox, ty + oy), msg, font=f, fill=(0, 0, 0, 160))
+    d.text((tx, ty), msg, font=f, fill=(*accent_rgb[:3], 255))
+
+    canvas.paste(inner, (vx, vy))
 
 
 def _draw_corner_brackets(draw, box, color, w=2, arm=18):
@@ -226,214 +404,164 @@ def _glow_line(draw, p0, p1, color, width=2):
 
 def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
     """
-    Full-frame RGBA overlay. If has_video_window, the main 16:9 rect is fully transparent
-    so FFmpeg can place scaled video underneath.
+    Full-frame RGBA overlay. Video area is transparent when has_video_window.
+    Progress track (grey) is drawn for FFmpeg to overlay the shrinking timer bar.
     """
     L = layout_rects(W, H)
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    # Deep navy background (opaque everywhere except optional video hole)
-    base_bg = (12, 14, 28, 255)
+    base_bg = (8, 11, 22, 255)
     draw.rectangle([0, 0, W, H], fill=base_bg)
 
     if cover_img:
-        sc = max(W / cover_img.width, H / cover_img.height) * 1.08
+        sc = max(W / cover_img.width, H / cover_img.height) * 1.06
         bw, bh = int(cover_img.width * sc), int(cover_img.height * sc)
         bg = cover_img.resize((bw, bh), Image.LANCZOS)
         bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 50))
-        bg = ImageEnhance.Brightness(bg).enhance(0.14)
-        bg = ImageEnhance.Color(bg).enhance(1.35)
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 48))
+        bg = ImageEnhance.Brightness(bg).enhance(0.12)
+        bg = ImageEnhance.Color(bg).enhance(1.15)
         canvas.paste(bg.convert("RGBA"), (0, 0))
 
-    # Darken with cyan-tinted vignette
     vign = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     vd = ImageDraw.Draw(vign)
     for y in range(H):
         t = y / max(H - 1, 1)
-        a = int(120 * (0.25 + 0.75 * t))
-        vd.line([(0, y), (W, y)], fill=(4, 12, 28, a))
+        a = int(100 * (0.2 + 0.8 * t))
+        vd.line([(0, y), (W, y)], fill=(6, 18, 40, a))
     canvas = Image.alpha_composite(canvas, vign)
 
     draw = ImageDraw.Draw(canvas)
     tp_id = entry.get("song_type_id", 0)
-    accent = hex_rgb(TYPE_COLOR.get(tp_id, "#00e8ff"))
-    cyan = (0, 220, 255, 255)
-    magenta = (255, 60, 180, 255)
-    gold = (232, 197, 71, 255)
+    accent = hex_rgb(TYPE_COLOR.get(tp_id, "#6ba4f5"))
+    bar_outline = (*UI_BLUE_GLOW[:3], 195)
 
-    # Outer HUD frame
     inset = max(6, L["margin"] // 2)
-    _draw_corner_brackets(draw, (inset, inset, W - inset, H - inset), (255, 255, 255, 100), 2, 24)
-    dsz = 4
-    for mx in (inset + 40, W // 2, W - inset - 40):
+    _draw_corner_brackets(draw, (inset, inset, W - inset, H - inset), (200, 215, 235, 85), 2, 22)
+    dsz = 3
+    for mx in (inset + 36, W // 2, W - inset - 36):
         draw.polygon(
-            [(mx - dsz, inset), (mx + dsz, inset), (mx, inset + dsz + 3)],
-            fill=(255, 255, 255, 75),
+            [(mx - dsz, inset), (mx + dsz, inset), (mx, inset + dsz + 2)],
+            fill=(120, 180, 220, 70),
         )
 
-    # Left column: video frame decoration (visible border around hole area)
     vx, vy, vw, vh = L["vx"], L["vy"], L["vw"], L["vh"]
-    frame_pad = 3
-    fx0, fy0 = vx - frame_pad, vy - frame_pad
-    fx1, fy1 = vx + vw + frame_pad, vy + vh + frame_pad
-    draw.rounded_rectangle(
-        [fx0, fy0, fx1, fy1],
-        radius=6,
-        outline=(*cyan[:3], 200),
-        width=2,
-    )
-    _draw_corner_brackets(draw, (fx0, fy0, fx1, fy1), (*cyan[:3], 160), 2, 20)
-    for i in range(0, vh, max(28, vh // 12)):
-        draw.ellipse([fx0 - 8, vy + i, fx0 - 3, vy + i + 4], fill=(*cyan[:3], 120))
+    fx0 = vx - FRAME_PAD
+    fy0 = vy - FRAME_PAD
+    fx1 = vx + vw + FRAME_PAD
+    fy1 = vy + vh + FRAME_PAD
+    draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=6, outline=bar_outline, width=2)
+    _draw_corner_brackets(draw, (fx0, fy0, fx1, fy1), (*bar_outline[:3], 130), 2, 18)
+    for i in range(0, vh, max(26, vh // 14)):
+        draw.ellipse([fx0 - 7, vy + i, fx0 - 3, vy + i + 3], fill=(*bar_outline[:3], 95))
 
-    # Punch transparent window for live video
     if has_video_window:
         hole = Image.new("RGBA", (vw, vh), (0, 0, 0, 0))
         canvas.paste(hole, (vx, vy))
-
     else:
-        # Sound-only panel inside frame
-        inner = Image.new("RGBA", (vw, vh), (8, 10, 22, 245))
-        canvas.paste(inner, (vx, vy))
-        sdraw = ImageDraw.Draw(canvas)
-        grid_c = (40, 80, 120, 90)
-        step = max(24, vw // 28)
-        for gx in range(vx, vx + vw, step):
-            sdraw.line([(gx, vy), (gx, vy + vh)], fill=grid_c, width=1)
-        for gy in range(vy, vy + vh, step):
-            sdraw.line([(vx, gy), (vx + vw, gy)], fill=grid_c, width=1)
-        msg = "SOUND ONLY"
-        bb = fonts["sound"].getbbox(msg)
-        tw = bb[2] - bb[0]
-        sdraw.text(
-            (vx + (vw - tw) // 2, vy + vh // 2 - (bb[3] - bb[1]) // 2),
-            msg,
-            font=fonts["sound"],
-            fill=(0, 240, 255, 220),
-        )
-        sdraw.text(
-            (vx + vw // 2, vy + vh // 2 + (bb[3] - bb[1]) // 2 + 8),
-            "Audio sample · no video",
-            font=fonts["badge"],
-            fill=(255, 255, 255, 140),
-            anchor="mt",
-        )
+        draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, accent, fonts)
 
     draw = ImageDraw.Draw(canvas)
 
-    # Bottom bar (song + credits) — under video column
-    bx, by, bw, bh = L["bar_x0"], L["bar_y"], L["bar_w"], L["bar_h"]
-    bar_fill = (16, 18, 32, 242)
-    draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=8, fill=bar_fill)
+    # Progress track (FFmpeg draws shrinking fill on top)
+    px, py, pww, ph = L["prog_x"], L["prog_y"], L["prog_w"], L["prog_h"]
+    track_pad = 1
     draw.rounded_rectangle(
-        [bx, by, bx + bw, by + bh],
-        radius=8,
-        outline=(*gold[:3], 200),
-        width=2,
-    )
-    # Timer ornament (left)
-    tcx, tcy = bx + int(bh * 0.52), by + bh // 2
-    tr = int(min(bh * 0.36, 46))
-    draw.ellipse(
-        [tcx - tr, tcy - tr, tcx + tr, tcy + tr],
-        outline=(*cyan[:3], 220),
-        width=2,
-    )
-    draw.ellipse(
-        [tcx - tr + 5, tcy - tr + 5, tcx + tr - 5, tcy + tr - 5],
-        outline=(*magenta[:3], 80),
+        [px - track_pad, py - track_pad, px + pww + track_pad, py + ph + track_pad],
+        radius=3,
+        fill=(18, 24, 38, 255),
+        outline=(*bar_outline[:3], 80),
         width=1,
     )
 
-    timer_x = tcx + tr + 18
-    credits_x0 = timer_x + 8
-    credits_max_w = bx + bw - credits_x0 - 16
+    bx, by, bw, bh = L["bar_x0"], L["bar_y"], L["bar_w"], L["bar_h"]
+    type_font = fonts["type_badge"]
+    type_w = max(52, _text_width(type_font, "OTHER") + 14)
+    bar_fill = (14, 17, 30, 245)
+    draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=8, fill=bar_fill)
+    draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=8, outline=bar_outline, width=2)
+    draw.line([(bx + type_w, by + 6), (bx + type_w, by + bh - 6)], fill=(*bar_outline[:3], 90), width=1)
 
-    title = entry.get("title", "")
-    fs = max(22, min(48, int(1400 / max(len(title), 8))))
-    try:
-        tf = ImageFont.truetype(fonts["lat_path"], fs) if fonts.get("lat_path") else fonts["bar_title"]
-    except Exception:
-        tf = fonts["bar_title"]
-
-    tbb = tf.getbbox(title)
-    tx = credits_x0 + max(0, (credits_max_w - (tbb[2] - tbb[0])) // 2)
-    draw.text((tx, by + 10), title, font=tf, fill=(248, 250, 255, 255))
-
-    cy = by + 14 + int((tbb[3] - tbb[1]) * 1.15)
-    artists = entry.get("artists", [])
-    credit_parts = []
-    for role_id in ROLE_ORDER:
-        group = [a for a in artists if a.get("role_id") == role_id]
-        if not group:
-            continue
-        names = ", ".join(a["name"] for a in group)
-        credit_parts.append(f"{ROLE_LABEL.get(role_id, '?')}: {names}")
-    credit_line = "  ·  ".join(credit_parts[:4]) if credit_parts else ""
-    if credit_line:
-        lh = 22
-        try:
-            bb0 = fonts["role_nm"].getbbox("Ag")
-            lh = max(18, bb0[3] - bb0[1] + 4)
-        except Exception:
-            pass
-        wrap_text(
-            draw,
-            credit_line,
-            fonts["role_nm"],
-            credits_x0,
-            cy,
-            credits_max_w,
-            lh,
-            (200, 210, 230, 230),
-            max_lines=2,
-        )
-
-    # Right panel background strip
-    rx0, rx1 = L["rx0"], L["rx1"]
-    pw = rx1 - rx0
-    py0 = L["top_m"]
-    draw.rounded_rectangle(
-        [rx0 - 6, py0, rx1 + 6, H - L["margin"]],
-        radius=10,
-        fill=(10, 12, 26, 230),
-    )
-    _glow_line(draw, (rx0 - 6, py0 + 40), (rx0 - 6, H - L["margin"]), (*cyan[:3], 180), 3)
-
-    # Rank block (top right)
-    rank = entry.get("rank", 0)
-    rh = int(pw * 0.42)
-    ry1 = py0 + rh
-    draw.rounded_rectangle([rx0, py0, rx1, ry1], radius=8, fill=(*magenta[:3], 55))
-    draw.rounded_rectangle(
-        [rx0, py0, rx1, ry1],
-        radius=8,
-        outline=(*magenta[:3], 220),
-        width=2,
-    )
-    rtxt = str(rank)
+    st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
+    tb = type_font.getbbox(st_abbr)
     draw.text(
-        (rx0 + pw // 2, py0 + rh // 2 - 6),
-        rtxt,
-        font=fonts["rank_big"],
-        fill=(255, 255, 255, 255),
+        (bx + type_w // 2, by + bh // 2 - (tb[3] - tb[1]) // 2),
+        st_abbr,
+        font=type_font,
+        fill=(*accent[:3], 255),
         anchor="mm",
     )
+
+    content_left = bx + type_w + 12
+    content_right = bx + bw - 12
+    credits_cx = (content_left + content_right) // 2
+    credits_max_w = max(80, content_right - content_left)
+
+    song_t = entry.get("title", "")
+    artists = entry.get("artists", [])
+    voc = ", ".join(a["name"] for a in artists if a.get("role_id") == 1)
+    line1_core = f"{song_t} / {voc}" if voc else song_t
+    fs = max(20, min(40, int(1200 / max(len(line1_core), 12))))
+    try:
+        tf = (
+            ImageFont.truetype(fonts["lat_path"], fs)
+            if fonts.get("lat_path")
+            else fonts["bar_title"]
+        )
+    except Exception:
+        tf = fonts["bar_title"]
+    line1 = fit_text_width(tf, line1_core, credits_max_w)
+    tbb = tf.getbbox(line1)
+    title_h = tbb[3] - tbb[1]
+
+    cal_font = fonts["bar_cal"]
+    cal_segs = build_cal_segments(artists)
+    w_line1 = _text_width(tf, line1)
+    w_cal = segments_width(cal_font, cal_segs) if cal_segs else 0
+    gap_title_cal = max(12, int(title_h * 0.42)) if cal_segs else 0
+    try:
+        cal_bb = cal_font.getbbox("Ag")
+        cal_h = (cal_bb[3] - cal_bb[1] + 3) if cal_segs else 0
+    except Exception:
+        cal_h = 22 if cal_segs else 0
+    block_h = title_h + gap_title_cal + cal_h
+    y_block_top = by + max(0, (bh - block_h) // 2)
+
+    x1 = credits_cx - w_line1 // 2
+    draw.text((x1, y_block_top), line1, font=tf, fill=TITLE_WHITE)
+    if cal_segs:
+        x_cal = credits_cx - w_cal // 2
+        y_cal = y_block_top + title_h + gap_title_cal
+        draw_text_segments(draw, x_cal, y_cal, cal_segs, cal_font)
+
+    rx0, rx1 = L["rx0"], L["rx1"]
+    pw = rx1 - rx0
+    pcx = (rx0 + rx1) // 2
+    py0 = L["top_m"]
+    draw.rounded_rectangle(
+        [rx0 - 5, py0, rx1 + 5, H - L["margin"]],
+        radius=10,
+        fill=(10, 14, 28, 238),
+    )
+    _glow_line(draw, (rx0 - 5, py0 + 36), (rx0 - 5, H - L["margin"]), (*bar_outline[:3], 120), 2)
+
+    rank = entry.get("rank", 0)
+    rh = int(pw * 0.26)
+    ry1 = py0 + rh
+    rtxt = f"#{rank}"
     draw.text(
-        (rx1 - 10, py0 + 14),
-        "RANK",
-        font=fonts["badge"],
-        fill=(255, 255, 255, 160),
-        anchor="rt",
+        (pcx, py0 + rh // 2),
+        rtxt,
+        font=fonts["rank_big"],
+        fill=(235, 242, 255, 255),
+        anchor="mm",
     )
 
-    # Cover art
-    cov_top = ry1 + 14
-    cov_max_h = int((H - L["margin"] - cov_top) * 0.52)
-    cov_w, cov_h = pw - 8, cov_max_h
-    cx0 = rx0 + 4
+    cov_top = ry1 + 12
+    cov_max_h = int((H - L["margin"] - cov_top) * 0.48)
+    cov_w, cov_h = pw - 10, cov_max_h
+    cx0 = pcx - cov_w // 2
     if cover_img:
         sc2 = min(cov_w / cover_img.width, cov_h / cover_img.height)
         dw, dh = int(cover_img.width * sc2), int(cover_img.height * sc2)
@@ -443,14 +571,14 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
         panel.paste(fit, (ox, oy))
         border = Image.new("RGBA", (cov_w, cov_h), (0, 0, 0, 0))
         bd = ImageDraw.Draw(border)
-        bd.rounded_rectangle([0, 0, cov_w - 1, cov_h - 1], radius=6, outline=(255, 255, 255, 200), width=2)
+        bd.rounded_rectangle([0, 0, cov_w - 1, cov_h - 1], radius=6, outline=(*bar_outline[:3], 200), width=2)
         panel = Image.alpha_composite(panel, border)
         canvas.alpha_composite(panel, (cx0, cov_top))
     else:
         draw.rounded_rectangle(
             [cx0, cov_top, cx0 + cov_w, cov_top + cov_h],
             radius=6,
-            outline=(255, 255, 255, 80),
+            outline=(*bar_outline[:3], 100),
             width=1,
         )
         draw.text(
@@ -462,35 +590,41 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
         )
 
     draw = ImageDraw.Draw(canvas)
-    meta_y = cov_top + cov_h + 16
-    game = entry.get("game", "Unknown")
-    stype = entry.get("song_type", TYPE_LABEL.get(tp_id, "?"))
-    gh = wrap_text(
-        draw,
-        game,
-        fonts["game"],
-        rx0,
-        meta_y,
-        pw,
-        30,
-        (240, 245, 255, 255),
-        max_lines=2,
-    )
-    meta_y += max(gh, 28) + 10
-    draw.rounded_rectangle(
-        [rx0, meta_y, rx1, meta_y + 32],
-        radius=5,
-        fill=(*accent, 45),
-        outline=(*accent, 160),
-        width=1,
-    )
-    draw.text(
-        (rx0 + pw // 2, meta_y + 16),
-        stype.upper(),
-        font=fonts["badge"],
-        fill=(*accent, 255),
-        anchor="mm",
-    )
+    meta_y = cov_top + cov_h + 14
+    vn_ro = (entry.get("vn_romaji") or entry.get("game") or "").strip()
+    vn_jp = (entry.get("vn_title_jp") or entry.get("game_jp") or "").strip()
+    meta_max_w = max(40, pw - 8)
+
+    draw_hcentered_line(draw, "<<TITLE>>", fonts["badge"], pcx, meta_y, LABEL_GREY)
+    meta_y += 18
+    if vn_ro:
+        meta_y += wrap_text_centered(
+            draw, vn_ro, fonts["game"], pcx, meta_y, meta_max_w, 28, TITLE_WHITE, max_lines=2
+        )
+        meta_y += 6
+    if vn_jp and vn_jp != vn_ro:
+        jf = fonts["jp"]
+        meta_y += wrap_text_centered(
+            draw, vn_jp, jf, pcx, meta_y, meta_max_w, 26, (210, 218, 235, 255), max_lines=2
+        )
+        meta_y += 8
+
+    meta_y += 10
+    draw_hcentered_line(draw, "<<DEVELOPER>>", fonts["badge"], pcx, meta_y, LABEL_GREY)
+    meta_y += 18
+    dev = (entry.get("vn_developers") or "").strip()
+    if dev:
+        meta_y += wrap_text_centered(
+            draw, dev, fonts["role_nm"], pcx, meta_y, meta_max_w, 22, (220, 226, 240, 255), max_lines=3
+        )
+    else:
+        meta_y += 16
+    meta_y += 10
+    draw_hcentered_line(draw, "<<RELEASE DATE>>", fonts["badge"], pcx, meta_y, LABEL_GREY)
+    meta_y += 18
+    rel = (entry.get("vn_released") or "").strip()
+    if rel:
+        draw_hcentered_line(draw, rel, fonts["role_nm"], pcx, meta_y, (220, 226, 240, 255))
 
     canvas.save(out_path, "PNG")
 
@@ -584,10 +718,6 @@ def check_ffmpeg():
     return False
 
 
-def escape_filter_path(p: str) -> str:
-    return p.replace("\\", "/").replace(":", "\\:").replace("'", "'\\''")
-
-
 def make_clip_composite(
     media_path,
     overlay_path,
@@ -606,14 +736,20 @@ def make_clip_composite(
     vh,
     is_video,
     aspect_mode,
-    drawfont_path,
+    prog_x,
+    prog_y,
+    prog_w,
+    prog_h,
     media_has_audio=True,
 ):
     """
-    Composite: background + scaled media in (vx,vy,vw,vh) + overlay + optional drawtext timer.
+    Composite: background + scaled media + overlay + progress bar (shrinks L→R as t advances).
     Inputs: 0 = media, 1 = overlay PNG; if not media_has_audio, 2 = anullsrc (silent AAC).
     """
-    font_esc = escape_filter_path(drawfont_path) if drawfont_path and os.path.isfile(drawfont_path) else ""
+    px, py, pw, ph = int(prog_x), int(prog_y), int(prog_w), max(2, int(prog_h))
+    td = float(dur)
+    # drawbox ignores w= when t=fill (FFmpeg quirk) → full-width bar. Use scale+overlay instead.
+    w_expr = f"{pw}-{pw}*t/{td}"
 
     if is_video:
         if aspect_mode == "stretch":
@@ -624,7 +760,7 @@ def make_clip_composite(
                 f"pad={vw}:{vh}:(ow-iw)/2:(oh-ih)/2:color=0x050508,setsar=1[vs]"
             )
         fc = (
-            f"color=c=0x0a0d12:s={W}x{H}:d={dur}:r={fps},format=rgba[bg];"
+            f"color=c=0x0a0d12:s={W}x{H}:d={td}:r={fps},format=rgba[bg];"
             f"{scale_chain};"
             f"[bg][vs]overlay=x={vx}:y={vy}:format=auto[vm];"
             f"[1:v]format=rgba[ov];"
@@ -632,22 +768,17 @@ def make_clip_composite(
         )
     else:
         fc = (
-            f"color=c=0x0a0d12:s={W}x{H}:d={dur}:r={fps},format=rgba[bg];"
+            f"color=c=0x0a0d12:s={W}x{H}:d={td}:r={fps},format=rgba[bg];"
             f"[1:v]format=rgba[ov];"
             f"[bg][ov]overlay=0:0:format=auto[v1]"
         )
 
-    tx = max(12, vx - 5)
-    ty = H - 85
-    if font_esc:
-        dt = (
-            f"drawtext=fontfile='{font_esc}':text='%{{pts\\:hms}}':x={tx}:y={ty}:"
-            f"fontsize={max(16, H // 54)}:fontcolor=white@0.92:borderw=1:bordercolor=black@0.5"
-        )
-        fc += f";[v1]{dt}[vout]"
-        vmap = "[vout]"
-    else:
-        vmap = "[v1]"
+    fc += (
+        f";color=c=0x4db8e8@0.92:s={pw}x{ph}:d={td}:r={fps},format=rgba[emq_pb0];"
+        f"[emq_pb0]scale=w={w_expr}:h={ph}:flags=fast_bilinear:eval=frame[emq_pb1];"
+        f"[v1][emq_pb1]overlay=x={px}:y={py}:format=auto[vout]"
+    )
+    vmap = "[vout]"
 
     args_ = [
         "-y",
@@ -714,21 +845,21 @@ def make_clip_composite(
     return ffmpeg(args_, verbose)
 
 
-def make_silent_clip_composite(overlay_path, clip_path, dur, fps, crf, preset, verbose, W, H, drawfont_path):
-    font_esc = escape_filter_path(drawfont_path) if drawfont_path and os.path.isfile(drawfont_path) else ""
+def make_silent_clip_composite(
+    overlay_path, clip_path, dur, fps, crf, preset, verbose, W, H, prog_x, prog_y, prog_w, prog_h
+):
+    px, py, pw, ph = int(prog_x), int(prog_y), int(prog_w), max(2, int(prog_h))
+    td = float(dur)
+    w_expr = f"{pw}-{pw}*t/{td}"
     fc = (
-        f"color=c=0x0a0d12:s={W}x{H}:d={dur}:r={fps},format=rgba[bg];"
+        f"color=c=0x0a0d12:s={W}x{H}:d={td}:r={fps},format=rgba[bg];"
         f"[1:v]format=rgba[ov];"
-        f"[bg][ov]overlay=0:0:format=auto[v1]"
+        f"[bg][ov]overlay=0:0:format=auto[v1];"
+        f"color=c=0x4db8e8@0.92:s={pw}x{ph}:d={td}:r={fps},format=rgba[emq_pb0];"
+        f"[emq_pb0]scale=w={w_expr}:h={ph}:flags=fast_bilinear:eval=frame[emq_pb1];"
+        f"[v1][emq_pb1]overlay=x={px}:y={py}:format=auto[vout]"
     )
-    if font_esc:
-        fc += (
-            f";[v1]drawtext=fontfile='{font_esc}':text='%{{pts\\:hms}}':x=24:y={H - 85}:"
-            f"fontsize={max(16, H // 54)}:fontcolor=white@0.92[vout]"
-        )
-        vmap = "[vout]"
-    else:
-        vmap = "[v1]"
+    vmap = "[vout]"
 
     return ffmpeg(
         [
@@ -888,7 +1019,6 @@ def main():
 
     print("\n  Fonts:")
     fonts = load_fonts(args, W, H)
-    drawfont = args.font or fonts.get("lat_path") or ""
 
     work = Path(args.work_dir)
     frames = work / "frames"
@@ -899,7 +1029,7 @@ def main():
     clips.mkdir(exist_ok=True)
 
     sess = requests.Session()
-    sess.headers["User-Agent"] = "Mozilla/5.0 EMQ-Ranking-Builder/4"
+    sess.headers["User-Agent"] = "Mozilla/5.0 EMQ-Ranking-Builder/5"
 
     print(f"\n{'─'*60}\n  Processing {len(entries)} songs\n{'─'*60}")
 
@@ -973,7 +1103,10 @@ def main():
                 L["vh"],
                 is_video,
                 aspect_mode,
-                drawfont,
+                L["prog_x"],
+                L["prog_y"],
+                L["prog_w"],
+                L["prog_h"],
                 media_has_audio=has_aud,
             )
             if not ok and is_video:
@@ -1002,7 +1135,10 @@ def main():
                         L["vh"],
                         False,
                         aspect_mode,
-                        drawfont,
+                        L["prog_x"],
+                        L["prog_y"],
+                        L["prog_w"],
+                        L["prog_h"],
                         media_has_audio=has_aud,
                     )
         else:
@@ -1012,7 +1148,19 @@ def main():
                 print("    Media:  ─ no local_file  → silence")
             no_audio += 1
             ok = make_silent_clip_composite(
-                overlay_path, clip_path, dur, fps, args.crf, args.preset, args.verbose, W, H, drawfont
+                overlay_path,
+                clip_path,
+                dur,
+                fps,
+                args.crf,
+                args.preset,
+                args.verbose,
+                W,
+                H,
+                L["prog_x"],
+                L["prog_y"],
+                L["prog_w"],
+                L["prog_h"],
             )
 
         if ok:
