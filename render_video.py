@@ -3,7 +3,13 @@
 EMQ Ranking Builder — Video Renderer (with authenticated download support)
 =========================================================================
 Downloads audio/video files from protected endpoints using session cookies.
-Place a cookies.json file in the working directory with your authentication.
+Media files are stored persistently in a 'media' folder and never deleted.
+
+Usage:
+    python render_video.py                    # Uses playlist.json, cookies.json, crf=18, preset=slow
+    python render_video.py my_playlist.json   # Specify custom playlist
+    python render_video.py --force-render     # Force re-render all clips
+    python render_video.py --out custom.mp4   # Custom output name
 """
 
 import argparse
@@ -13,8 +19,10 @@ import os
 import shutil
 import subprocess
 import sys
+import hashlib
 from collections import defaultdict
 from pathlib import Path
+from datetime import datetime
 
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
@@ -640,7 +648,6 @@ def load_auth_session(cookie_file=None, token=None):
     })
     
     if token:
-        # If a bearer token is provided (though site may not use it)
         session.headers["Authorization"] = f"Bearer {token}"
         print("  Using bearer token authentication")
         return session
@@ -664,66 +671,21 @@ def load_auth_session(cookie_file=None, token=None):
             print(f"  Warning: Failed to load cookies: {e}")
     
     return session
-    """Create a requests session with authentication."""
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 EMQ-Ranking-Builder/5",
-        "Accept": "audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://erogemusicquiz.com/",
-        "Origin": "https://erogemusicquiz.com",
-    })
-    
-    if token:
-        # If a bearer token is provided
-        session.headers["Authorization"] = f"Bearer {token}"
-        print("  Using bearer token authentication")
-        return session
-    
-    if cookie_file and os.path.isfile(cookie_file):
-        try:
-            with open(cookie_file, "r") as f:
-                cookies_data = json.load(f)
-            for cookie in cookies_data:
-                if isinstance(cookie, dict):
-                    session.cookies.set(
-                        cookie.get("name", ""),
-                        cookie.get("value", ""),
-                        domain=cookie.get("domain", "erogemusicquiz.com"),
-                        path=cookie.get("path", "/"),
-                    )
-            print(f"  Loaded cookies from {cookie_file}")
-        except Exception as e:
-            print(f"  Warning: Failed to load cookies: {e}")
-    
-    # Also try to load from Netscape format cookies.txt
-    netscape_file = cookie_file.replace(".json", ".txt") if cookie_file else "cookies.txt"
-    if os.path.isfile(netscape_file):
-        try:
-            import http.cookiejar as cookielib
-            cj = cookielib.MozillaCookieJar(netscape_file)
-            cj.load()
-            session.cookies.update(cj)
-            print(f"  Loaded Netscape cookies from {netscape_file}")
-        except Exception as e:
-            pass
-    
-    return session
+
+
 def download_audio_file(audio_url, dest_path, session):
-    """Download audio file from authenticated endpoint using GET with Range."""
+    """Download audio file from authenticated endpoint with resume support."""
     if not audio_url:
         return None
     
-    # Check if file already exists
-    if dest_path and os.path.isfile(dest_path) and os.path.getsize(dest_path) > 1024:
-        print(f"    Audio file already exists: {dest_path.name}")
+    # Check if file already exists and is valid
+    if dest_path and dest_path.is_file() and dest_path.stat().st_size > 1024:
+        print(f"    Using existing file: {dest_path.name}")
         return dest_path
     
     try:
-        print(f"    Downloading: {audio_url[:80]}...")
+        print(f"    Downloading: {audio_url.split('/')[-1][:50]}...")
         
-        # Use GET with Range header (server doesn't support HEAD)
         headers = {
             "Range": "bytes=0-",
             "Accept": "audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
@@ -731,61 +693,28 @@ def download_audio_file(audio_url, dest_path, session):
             "Origin": "https://erogemusicquiz.com",
         }
         
-        # First, try to get file size with a small range request
-        size_headers = {
-            "Range": "bytes=0-0",
-            "Referer": "https://erogemusicquiz.com/",
-        }
-        size_resp = session.get(audio_url, timeout=30, headers=size_headers, stream=True)
+        # Download the file with streaming
+        resp = session.get(audio_url, timeout=120, stream=True, headers=headers)
         
-        if size_resp.status_code == 401:
+        if resp.status_code == 401:
             print("    ✗ Authentication failed (401). Cookies may be expired.")
             return None
-        if size_resp.status_code == 403:
+        if resp.status_code == 403:
             print("    ✗ Access forbidden (403). Check your permissions.")
             return None
-        if size_resp.status_code == 404:
+        if resp.status_code == 404:
             print("    ✗ Audio URL not found (404).")
             return None
         
-        # Get total size from Content-Range header
-        total_size = None
-        content_range = size_resp.headers.get("content-range", "")
-        if content_range and "/" in content_range:
-            try:
-                total_size = int(content_range.split("/")[-1])
-            except ValueError:
-                pass
-        
-        if not total_size:
-            total_size = int(size_resp.headers.get("content-length", 0))
-        
-        # Now download the full file
-        resp = session.get(audio_url, timeout=120, stream=True, headers=headers)
         resp.raise_for_status()
         
-        # Determine file extension from content-type or URL
-        content_type = resp.headers.get("content-type", "")
-        if "mp3" in content_type or audio_url.endswith(".mp3"):
-            ext = ".mp3"
-        elif "ogg" in content_type or audio_url.endswith(".ogg"):
-            ext = ".ogg"
-        elif "opus" in content_type:
-            ext = ".opus"
-        elif "m4a" in content_type:
-            ext = ".m4a"
-        elif "webm" in content_type:
-            ext = ".webm"
-        else:
-            ext = ".mp3"  # default
+        # Get total size if available
+        total_size = int(resp.headers.get("content-length", 0))
         
-        if not dest_path:
-            import tempfile
-            dest_path = Path(tempfile.gettempdir()) / f"emq_audio_{hash(audio_url)}{ext}"
-        elif not dest_path.suffix:
-            dest_path = dest_path.with_suffix(ext)
+        # Ensure parent directory exists
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Download in chunks with progress
+        # Download with progress
         downloaded = 0
         with open(dest_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=8192):
@@ -794,117 +723,54 @@ def download_audio_file(audio_url, dest_path, session):
                     downloaded += len(chunk)
                     if total_size and total_size > 0:
                         percent = (downloaded / total_size) * 100
-                        # Only print every few updates to avoid spam
-                        if int(percent) % 10 == 0 and int(percent) != int((downloaded - len(chunk)) / total_size * 100):
+                        if int(percent) % 10 == 0:
                             print(f"\r    Downloading: {percent:.1f}%", end="", flush=True)
         
         if total_size:
             print(f"\r    Downloaded: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
         else:
             print(f"\r    Downloaded: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
+        
         return dest_path
         
     except requests.exceptions.RequestException as e:
         print(f"    ✗ Download failed: {e}")
-        return None
-    """Download audio file from authenticated endpoint."""
-    if not audio_url:
-        return None
-    
-    # Check if file already exists
-    if dest_path and os.path.isfile(dest_path) and os.path.getsize(dest_path) > 1024:
-        print(f"    Audio file already exists: {dest_path.name}")
-        return dest_path
-    
-    try:
-        print(f"    Downloading: {audio_url[:80]}...")
-        headers = {
-            "Range": "bytes=0-",
-        }
-        # Try with stream=True for large files
-        r = session.get(audio_url, timeout=60, stream=True, headers=headers)
-        
-        if r.status_code == 401:
-            print("    ✗ Authentication failed (401). Need valid session/token.")
-            return None
-        if r.status_code == 403:
-            print("    ✗ Access forbidden (403). Check your permissions.")
-            return None
-        if r.status_code == 404:
-            print("    ✗ Audio URL not found (404).")
-            return None
-        
-        r.raise_for_status()
-        
-        # Determine file extension from content-type or URL
-        content_type = r.headers.get("content-type", "")
-        if "mp3" in content_type or audio_url.endswith(".mp3"):
-            ext = ".mp3"
-        elif "ogg" in content_type or audio_url.endswith(".ogg"):
-            ext = ".ogg"
-        elif "opus" in content_type:
-            ext = ".opus"
-        elif "m4a" in content_type:
-            ext = ".m4a"
-        elif "webm" in content_type:
-            ext = ".webm"
-        else:
-            ext = ".mp3"  # default
-        
-        if not dest_path:
-            import tempfile
-            dest_path = Path(tempfile.gettempdir()) / f"emq_audio_{hash(audio_url)}{ext}"
-        elif not dest_path.suffix:
-            dest_path = dest_path.with_suffix(ext)
-        
-        # Download in chunks
-        total_size = int(r.headers.get("content-length", 0))
-        downloaded = 0
-        with open(dest_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        print(f"\r    Downloading: {percent:.1f}%", end="", flush=True)
-        
-        print(f"\r    Downloaded: {dest_path.name} ({downloaded/1024/1024:.1f} MB)")
-        return dest_path
-        
-    except requests.exceptions.RequestException as e:
-        print(f"    ✗ Download failed: {e}")
+        # Clean up partial download
+        if dest_path and dest_path.exists():
+            dest_path.unlink()
         return None
 
 
-def resolve_media_path(entry, playlist_path, audio_session, audio_cache_dir):
+def resolve_media_path_persistent(entry, playlist_path, audio_session, audio_cache, video_cache):
     """
-    Resolve media path - first try local_file, then download audio_url if available.
+    Resolve media path with persistent caching.
+    Priority: local_file > cached download > download from audio_url
+    Returns: (path, source, was_cached)
+    source: 'local', 'cached', 'downloaded', or 'missing'
     """
     local_file = entry.get("local_file")
     
-    # Check local file first
+    # 1. Check local file first (user-provided path)
     if local_file:
         lf = local_file.strip()
         if lf:
             p = Path(lf)
             if p.is_file():
-                return p, "local"
+                return p, "local", False
             script_dir = Path(__file__).resolve().parent
             pl_parent = Path(playlist_path).resolve().parent
             for base in (pl_parent, script_dir, Path.cwd()):
                 cand = (base / lf).resolve()
                 if cand.is_file():
-                    return cand, "local"
+                    return cand, "local", False
     
-    # Try to download from audio_url
+    # 2. Try to get from audio_url with caching
     audio_url = entry.get("audio_url")
     if audio_url:
-        # Create cache filename from URL hash
-        import hashlib
-        url_hash = hashlib.md5(audio_url.encode()).hexdigest()[:12]
+        # Create consistent filename from URL hash
+        url_hash = hashlib.md5(audio_url.encode()).hexdigest()[:16]
         
-        # Try to determine extension from URL
+        # Determine extension
         ext = ".mp3"
         if ".mp3" in audio_url.lower():
             ext = ".mp3"
@@ -916,14 +782,30 @@ def resolve_media_path(entry, playlist_path, audio_session, audio_cache_dir):
             ext = ".m4a"
         elif ".webm" in audio_url.lower():
             ext = ".webm"
+        elif ".mp4" in audio_url.lower():
+            ext = ".mp4"
         
-        cache_path = audio_cache_dir / f"{url_hash}{ext}"
+        # Check in audio cache
+        cache_path = audio_cache / f"{url_hash}{ext}"
         
-        downloaded = download_audio_file(audio_url, cache_path, audio_session)
-        if downloaded and downloaded.is_file():
-            return downloaded, "downloaded"
+        # Also try to find by song ID (alternative naming)
+        song_id = entry.get("id", "")
+        if song_id:
+            alt_path = audio_cache / f"song_{song_id}{ext}"
+            if alt_path.is_file() and not cache_path.is_file():
+                cache_path = alt_path
+        
+        # If file exists in cache, use it
+        if cache_path.is_file() and cache_path.stat().st_size > 1024:
+            return cache_path, "cached", True
+        
+        # Otherwise download if we have a session
+        if audio_session:
+            downloaded = download_audio_file(audio_url, cache_path, audio_session)
+            if downloaded and downloaded.is_file():
+                return downloaded, "downloaded", False
     
-    return None, "missing"
+    return None, "missing", False
 
 
 def media_kind(path: Path):
@@ -1217,67 +1099,94 @@ def concat_xfade(clips, durations, trans, out, verbose):
     )
 
 
-def export_browser_cookies_guide():
-    """Print instructions for exporting cookies from browser."""
-    print("\n" + "="*60)
-    print("  HOW TO EXPORT COOKIES FOR AUTHENTICATION")
-    print("="*60)
-    print("""
-Option 1: Export cookies.json using browser extensions:
+def default_playlist_path():
+    """Return default playlist.json path if it exists"""
+    if Path("playlist.json").exists():
+        return "playlist.json"
+    return None
 
-  Chrome/Edge: Install "EditThisCookie" or "Cookie-Editor"
-    - Log into erogemusicquiz.com
-    - Open extension → Export → Save as JSON
-    
-  Firefox: Install "Cookie Quick Manager"
-    - Export all cookies for erogemusicquiz.com as JSON
 
-Option 2: Manual token (if you have a session token):
-  
-  Run with: --token YOUR_SESSION_TOKEN
-
-Option 3: Use cookies.txt format (Netscape):
-  
-  Install "cookies.txt" extension for Firefox/Chrome
-  Export for erogemusicquiz.com
-
-Then place the file in the same folder as this script or provide path:
-  --cookies cookies.json
-""")
-    print("="*60 + "\n")
+def default_cookies_path():
+    """Return default cookies.json path if it exists"""
+    if Path("cookies.json").exists():
+        return "cookies.json"
+    return None
 
 
 def main():
-    ap = argparse.ArgumentParser(description="EMQ Ranking Builder — Video Renderer (with auth)")
-    ap.add_argument("playlist")
-    ap.add_argument("--out", default="ranking.mp4")
-    ap.add_argument("--transition", default=None, type=float)
-    ap.add_argument("--fps", default=None, type=int)
-    ap.add_argument("--width", default=None, type=int)
-    ap.add_argument("--height", default=None, type=int)
-    ap.add_argument("--crf", default=18, type=int)
-    ap.add_argument(
-        "--preset",
-        default="fast",
-        choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "veryslow"],
-    )
-    ap.add_argument("--font", default=None)
-    ap.add_argument("--font-jp", default=None)
-    ap.add_argument("--work-dir", default="emq_work")
-    ap.add_argument("--keep-clips", action="store_true")
+    # First, check if no arguments were provided
+    no_args = len(sys.argv) == 1
     
-    # Changed: skip-existing is now default (store_false for force-render)
-    ap.add_argument("--force-render", action="store_true", 
+    ap = argparse.ArgumentParser(
+        description="EMQ Ranking Builder — Video Renderer (with auth)",
+        usage="python render_video.py [playlist.json] [options]"
+    )
+    ap.add_argument("playlist", nargs="?", default=None,
+                    help="Playlist JSON file (default: playlist.json if exists)")
+    ap.add_argument("--out", default="ranking.mp4",
+                    help="Output video file (default: ranking.mp4)")
+    ap.add_argument("--transition", default=None, type=float,
+                    help="Crossfade duration in seconds")
+    ap.add_argument("--fps", default=None, type=int,
+                    help="Frames per second (default: from playlist or 30)")
+    ap.add_argument("--width", default=None, type=int,
+                    help="Output width (default: from playlist or 1920)")
+    ap.add_argument("--height", default=None, type=int,
+                    help="Output height (default: from playlist or 1080)")
+    ap.add_argument("--crf", default=18, type=int,
+                    help="CRF quality (default: 18)")
+    ap.add_argument("--preset", default="slow",
+                    choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "veryslow"],
+                    help="Encoding preset (default: slow)")
+    ap.add_argument("--font", default=None,
+                    help="Path to custom Latin font")
+    ap.add_argument("--font-jp", default=None,
+                    help="Path to custom Japanese font")
+    ap.add_argument("--work-dir", default="emq_work",
+                    help="Working directory for temporary files (default: emq_work)")
+    ap.add_argument("--keep-clips", action="store_true",
+                    help="Keep temporary clip files after rendering")
+    ap.add_argument("--force-render", action="store_true",
                     help="Force re-rendering of all clips (ignore existing clip files)")
-    ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="Verbose output")
     
     # Authentication arguments
-    ap.add_argument("--cookies", help="Path to cookies.json file (from browser extension)")
-    ap.add_argument("--token", help="Bearer token for authentication")
-    ap.add_argument("--no-download", action="store_true", 
+    ap.add_argument("--cookies", default=None,
+                    help="Path to cookies.json file (default: cookies.json if exists)")
+    ap.add_argument("--token", default=None,
+                    help="Bearer token for authentication")
+    ap.add_argument("--no-download", action="store_true",
                     help="Skip downloading audio files, use local only")
     
+    # If no arguments, set defaults for playlist and cookies
+    if no_args:
+        sys.argv.append("--cookies")
+        sys.argv.append(default_cookies_path() if default_cookies_path() else "")
+        # We'll handle missing files gracefully
+    
     args = ap.parse_args()
+    
+    # Set default playlist if not provided and exists
+    if not args.playlist and default_playlist_path():
+        args.playlist = "playlist.json"
+        print(f"  Using default playlist: {args.playlist}")
+    
+    # Set default cookies if not provided and exists
+    if not args.cookies and default_cookies_path() and not args.token:
+        args.cookies = "cookies.json"
+        print(f"  Using default cookies: {args.cookies}")
+    
+    # Validate required files
+    if not args.playlist:
+        sys.exit("ERROR: No playlist file specified and playlist.json not found")
+    
+    if not Path(args.playlist).exists():
+        sys.exit(f"ERROR: Playlist file not found: {args.playlist}")
+    
+    if not args.no_download and not args.cookies and not args.token:
+        print("  WARNING: No authentication provided (--cookies or --token)")
+        print("  Audio downloads may fail. Use --cookies cookies.json if needed.")
     
     # skip_existing is True by default, False only if --force-render is specified
     skip_existing = not args.force_render
@@ -1294,9 +1203,6 @@ def main():
         sys.exit(1)
 
     pl_path = Path(args.playlist)
-    if not pl_path.is_file():
-        sys.exit(f"ERROR: {args.playlist} not found")
-
     with open(pl_path, encoding="utf-8") as f:
         pl = json.load(f)
 
@@ -1323,6 +1229,8 @@ def main():
     print(f"  Non-16:9 video: {aspect_mode}")
     print(f"  Duration:   ~{m}m {s}s")
     print(f"  Transition: {trans}s crossfade" if trans else "  Transition: hard cuts")
+    print(f"  CRF:        {args.crf}")
+    print(f"  Preset:     {args.preset}")
 
     print("\n  Fonts:")
     fonts = load_fonts(args, W, H)
@@ -1334,7 +1242,7 @@ def main():
         audio_session = load_auth_session(args.cookies, args.token)
         if not audio_session.cookies and not args.token:
             print("    No authentication provided. Audio downloads may fail.")
-            print("    Use --cookies or --token to enable authenticated downloads.")
+            print("    Use --cookies cookies.json to enable authenticated downloads.")
     else:
         print("\n  Audio downloads disabled (--no-download)")
 
@@ -1560,6 +1468,7 @@ def main():
         shutil.rmtree(str(work), ignore_errors=True)
         print(f"  Removed temporary work folder: {work}")
         print(f"  Media folder 'media/' was preserved.\n")
+
 
 if __name__ == "__main__":
     main()
