@@ -1459,7 +1459,7 @@ def main():
     if skipped_clips_count:
         print(f"    Skipped (cached clips): {skipped_clips_count}")
     if downloaded_count:
-        print(f"    New downloads: {downloaded_count} to media/audio/")
+        print(f"    New downloads: {downloaded_count} to media/")
     if used_cached_count:
         print(f"    Used from cache: {used_cached_count} audio file(s)")
     if no_audio:
