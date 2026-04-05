@@ -10,9 +10,10 @@ The file can be 1+ GB — it is streamed line-by-line, so memory usage stays
 low (~150 MB peak for the parsed tables we actually need).
 
 Usage:
-    python build_db.py dump.txt
-    python build_db.py dump.txt --out db.json
-    python build_db.py dump.txt -v          # verbose: show row counts as parsed
+    python build_db.py                    # Auto-download latest dump
+    python build_db.py dump.txt           # Use local dump file
+    python build_db.py --out db.json
+    python build_db.py -v                 # verbose: show row counts as parsed
 
 Output:
     db.json  (~10 MB) — place alongside index.html in your GitHub Pages repo.
@@ -25,7 +26,14 @@ import json
 import re
 import sys
 import time
+import urllib.request
+import urllib.error
+import subprocess
+import tempfile
+import shutil
+import os
 from pathlib import Path
+from datetime import datetime
 
 
 # ── Tables we need (all others are skipped while streaming) ──────────────────
@@ -62,6 +70,212 @@ URL_REPLACE_TO   = "https://erogemusicquiz.com"
 # Song type and role constants (for reference; not used in build)
 TYPE_LABEL = {1: "Opening", 2: "Ending", 3: "Insert Song", 4: "BGM"}
 ROLE_ORDER  = [1, 6, 2, 5, 3, 4]
+
+# Download settings
+BASE_URL = "https://dl.erogemusicquiz.com/dump/song/"
+ZSTD_EXT = ".txt.zst"
+
+
+# ── Download and extraction functions ─────────────────────────────────────────
+def get_todays_filename() -> str:
+    """Generate today's filename in format: public_pgdump_YYYY-MM-DD_EMQ@localhost.txt.zst"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return f"public_pgdump_{today}_EMQ@localhost.txt.zst"
+
+
+def get_todays_url() -> str:
+    """Generate today's download URL"""
+    filename = get_todays_filename()
+    # URL encode the @ symbol
+    encoded_filename = filename.replace("@", "%40")
+    return f"{BASE_URL}{encoded_filename}"
+
+
+def check_7zip() -> bool:
+    """Check if 7z or 7za is available"""
+    for cmd in ["7z", "7za"]:
+        try:
+            result = subprocess.run(
+                [cmd, "--help"],
+                capture_output=True,
+                timeout=5,
+                shell=True if os.name == "nt" else False
+            )
+            if result.returncode == 0:
+                return True
+        except (subprocess.SubprocessError, FileNotFoundError):
+            continue
+    return False
+
+
+def extract_zst_with_7z(zst_path: Path, output_dir: Path, verbose: bool) -> bool:
+    """Extract .zst file using 7-Zip"""
+    if not check_7zip():
+        if verbose:
+            print("  ⚠ 7-Zip not found. Please install 7-Zip or use a local dump file.")
+        return False
+    
+    cmd = ["7z", "e", str(zst_path), f"-o{output_dir}", "-y"]
+    if verbose:
+        print(f"  Running: {' '.join(cmd)}")
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode == 0:
+            return True
+        else:
+            if verbose:
+                print(f"  7-Zip error: {result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        if verbose:
+            print("  Extraction timed out after 5 minutes")
+        return False
+    except Exception as e:
+        if verbose:
+            print(f"  Extraction error: {e}")
+        return False
+
+
+def download_file(url: str, dest_path: Path, verbose: bool) -> bool:
+    """Download a file with progress indication"""
+    try:
+        if verbose:
+            print(f"  Downloading: {url}")
+            print(f"  To: {dest_path}")
+        
+        # Create a request with a user agent
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "EMQ-Ranking-Builder/1.0",
+                "Accept": "*/*"
+            }
+        )
+        
+        with urllib.request.urlopen(req, timeout=60) as response:
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            
+            with open(dest_path, "wb") as out_file:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+                    downloaded += len(chunk)
+                    if verbose and total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        print(f"\r    Progress: {percent:.1f}% ({downloaded/1024/1024:.1f} MB / {total_size/1024/1024:.1f} MB)", end="", flush=True)
+            
+            if verbose:
+                print()  # New line after progress
+        
+        return dest_path.exists() and dest_path.stat().st_size > 0
+    
+    except urllib.error.HTTPError as e:
+        if verbose:
+            print(f"\n  HTTP Error {e.code}: {e.reason}")
+        return False
+    except urllib.error.URLError as e:
+        if verbose:
+            print(f"\n  URL Error: {e.reason}")
+        return False
+    except Exception as e:
+        if verbose:
+            print(f"\n  Download error: {e}")
+        return False
+
+
+def get_dump_file(dump_arg: str | None, verbose: bool) -> Path | None:
+    """
+    Get the dump file either from local path or by downloading.
+    Returns Path to the extracted .txt file, or None on failure.
+    """
+    # If user provided a local file, use it directly
+    if dump_arg:
+        dump_path = Path(dump_arg)
+        if dump_path.exists():
+            if verbose:
+                print(f"  Using local dump: {dump_path}")
+            return dump_path
+        else:
+            print(f"  ERROR: Local file not found: {dump_path}")
+            return None
+    
+    # Otherwise, download today's dump
+    print("\n  No local dump provided. Attempting to download latest dump...")
+    
+    filename = get_todays_filename()
+    zst_path = Path(tempfile.gettempdir()) / filename
+    txt_filename = filename.replace(".zst", "")
+    txt_path = Path(tempfile.gettempdir()) / txt_filename
+    
+    # Check if already downloaded today
+    if zst_path.exists():
+        age_hours = (datetime.now() - datetime.fromtimestamp(zst_path.stat().st_mtime)).total_seconds() / 3600
+        if age_hours < 24:
+            if verbose:
+                print(f"  Found recent download: {zst_path} ({age_hours:.1f} hours old)")
+            
+            # Check if extracted file exists
+            if txt_path.exists():
+                if verbose:
+                    print(f"  Using previously extracted file: {txt_path}")
+                return txt_path
+        else:
+            if verbose:
+                print(f"  Download is {age_hours:.1f} hours old, re-downloading...")
+            zst_path.unlink()  # Remove old file
+    
+    # Download the .zst file
+    url = get_todays_url()
+    if verbose:
+        print(f"  Today's dump: {filename}")
+        print(f"  Download URL: {url}")
+    
+    if not download_file(url, zst_path, verbose):
+        print(f"  ERROR: Failed to download {url}")
+        return None
+    
+    print(f"  Downloaded: {zst_path.name} ({zst_path.stat().st_size / 1024 / 1024:.1f} MB)")
+    
+    # Check for 7-Zip
+    if not check_7zip():
+        print("\n  ERROR: 7-Zip not found. Please install 7-Zip or provide a local dump file.")
+        print("  Download 7-Zip from: https://www.7-zip.org/")
+        return None
+    
+    # Extract the .zst file
+    print(f"  Extracting {filename}...")
+    if extract_zst_with_7z(zst_path, Path(tempfile.gettempdir()), verbose):
+        if txt_path.exists():
+            print(f"  Extracted: {txt_filename} ({txt_path.stat().st_size / 1024 / 1024:.1f} MB)")
+            
+            # Clean up .zst file
+            zst_path.unlink()
+            if verbose:
+                print(f"  Deleted: {zst_path.name}")
+            
+            return txt_path
+        else:
+            print(f"  ERROR: Extraction completed but {txt_filename} not found")
+            return None
+    else:
+        print("  ERROR: Extraction failed")
+        return None
+
+
+def cleanup_temp_file(file_path: Path, verbose: bool):
+    """Delete a temporary file if it exists"""
+    if file_path and file_path.exists():
+        try:
+            file_path.unlink()
+            if verbose:
+                print(f"  Deleted: {file_path.name}")
+        except Exception as e:
+            if verbose:
+                print(f"  Warning: Could not delete {file_path.name}: {e}")
 
 
 # ── Streaming parser ──────────────────────────────────────────────────────────
@@ -352,35 +566,48 @@ def build_db(dump_path: Path, verbose: bool):
 # ── Entry point ───────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(
-        description="Build db.json from a plain-text pg_dump SQL file",
+        description="Build db.json from a plain-text pg_dump SQL file (auto-downloads latest dump if no file provided)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("dump", metavar="dump.txt",
-                    help="Plain-text pg_dump file (pg_dump -f dump.txt EMQ)")
+    ap.add_argument("dump", nargs="?", metavar="dump.txt", default=None,
+                    help="Plain-text pg_dump file (optional - if omitted, downloads latest dump)")
     ap.add_argument("--out", default="db.json", metavar="FILE",
                     help="Output path (default: db.json)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="Print table names as they are streamed")
     args = ap.parse_args()
 
-    dump_path = Path(args.dump)
-    if not dump_path.is_file():
-        sys.exit(f"ERROR: File not found: {args.dump}")
+    # Get the dump file (either local or downloaded)
+    dump_path = get_dump_file(args.dump, args.verbose)
+    if not dump_path:
+        sys.exit(1)
 
-    db = build_db(dump_path, args.verbose)
+    # Check if it's a temporary file (downloaded) so we can clean up later
+    is_temp = args.dump is None
+    temp_dump_path = dump_path if is_temp else None
 
-    out_path = Path(args.out)
-    print(f"\n  Writing {out_path} …", end="", flush=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(db, f, ensure_ascii=False, separators=(",", ":"))
-    size_mb = out_path.stat().st_size / 1024 / 1024
-    print(f" done  ({size_mb:.1f} MB)")
+    try:
+        # Build the database
+        db = build_db(dump_path, args.verbose)
 
-    print(f"\n{'='*60}")
-    print(f"  ✓  {out_path}  ({size_mb:.1f} MB, {db['count']:,} songs)")
-    print(f"{'='*60}")
-    print(f"\n  → Place db.json alongside index.html in your GitHub repo.\n")
+        # Write output
+        out_path = Path(args.out)
+        print(f"\n  Writing {out_path} …", end="", flush=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, separators=(",", ":"))
+        size_mb = out_path.stat().st_size / 1024 / 1024
+        print(f" done  ({size_mb:.1f} MB)")
+
+        print(f"\n{'='*60}")
+        print(f"  ✓  {out_path}  ({size_mb:.1f} MB, {db['count']:,} songs)")
+        print(f"{'='*60}")
+        print(f"\n  → Place db.json alongside index.html in your GitHub repo.\n")
+
+    finally:
+        # Clean up temporary dump file if it was downloaded
+        if temp_dump_path and temp_dump_path.exists():
+            cleanup_temp_file(temp_dump_path, args.verbose)
 
 
 if __name__ == "__main__":
