@@ -1,0 +1,26 @@
+[
+    {
+        "domain": ".erogemusicquiz.com",
+        "hostOnly": false,
+        "httpOnly": true,
+        "name": "session-token",
+        "path": "/",
+        "sameSite": "lax",
+        "secure": true,
+        "session": false,
+        "storeId": null,
+        "value": "#-#-#-#-#"
+    },
+    {
+        "domain": ".erogemusicquiz.com",
+        "hostOnly": false,
+        "httpOnly": true,
+        "name": "user-id",
+        "path": "/",
+        "sameSite": "lax",
+        "secure": true,
+        "session": false,
+        "storeId": null,
+        "value": "#"
+    }
+]

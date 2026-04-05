@@ -2,22 +2,8 @@
 """
 EMQ Ranking Builder — Database Builder
 =======================================
-Reads a single plain-text PostgreSQL dump (produced by pg_dump without -Fd,
-e.g. "pg_dump -f dump.txt EMQ") and outputs a compact db.json for the
-ranking web app.
-
-The file can be 1+ GB — it is streamed line-by-line, so memory usage stays
-low (~150 MB peak for the parsed tables we actually need).
-
-Usage:
-    python build_db.py dump.txt
-    python build_db.py dump.txt --out db.json
-    python build_db.py dump.txt -v          # verbose: show row counts as parsed
-
-Output:
-    db.json  (~10 MB) — place alongside index.html in your GitHub Pages repo.
-
-Python 3.8+, no dependencies beyond the standard library.
+Reads a single plain-text PostgreSQL dump and outputs a compact db.json.
+Prioritizes shortest video > shortest audio > any other media.
 """
 
 import argparse
@@ -25,11 +11,17 @@ import json
 import re
 import sys
 import time
+import urllib.request
+import urllib.error
+import subprocess
+import tempfile
+import shutil
+import os
 from pathlib import Path
+from datetime import datetime
 
 
 # ── Tables we need (all others are skipped while streaming) ──────────────────
-# Maps table name → list of column names in COPY order
 NEEDED = {
     "music_title": [
         "music_id", "latin_title", "non_latin_title", "language", "is_main_title"
@@ -59,60 +51,248 @@ NEEDED = {
 URL_REPLACE_FROM = "https://emqselfhost"
 URL_REPLACE_TO   = "https://erogemusicquiz.com"
 
-# Song type and role constants (for reference; not used in build)
+# Song type and role constants
 TYPE_LABEL = {1: "Opening", 2: "Ending", 3: "Insert Song", 4: "BGM"}
 ROLE_ORDER  = [1, 6, 2, 5, 3, 4]
+
+# Download settings
+BASE_URL = "https://dl.erogemusicquiz.com/dump/song/"
+ZSTD_EXT = ".txt.zst"
+
+
+def parse_duration(duration_str: str) -> float:
+    """
+    Parse duration string like '00:04:07.379' or '00:03:25.27' to seconds.
+    Returns float or 9999 if parsing fails.
+    """
+    if not duration_str:
+        return 9999
+    
+    try:
+        # Handle format: HH:MM:SS.ms or MM:SS.ms
+        parts = duration_str.split(':')
+        if len(parts) == 3:
+            h, m, s = parts
+            seconds = int(h) * 3600 + int(m) * 60 + float(s)
+        elif len(parts) == 2:
+            m, s = parts
+            seconds = int(m) * 60 + float(s)
+        else:
+            seconds = float(duration_str)
+        return seconds
+    except (ValueError, AttributeError):
+        return 9999
+
+
+def duration_to_str(seconds: float) -> str:
+    """Convert seconds back to HH:MM:SS.ms format"""
+    if seconds >= 9999:
+        return ""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+    else:
+        return f"{minutes:02d}:{secs:06.3f}"
+
+
+# ── Download and extraction functions ─────────────────────────────────────────
+def get_todays_filename() -> str:
+    today = datetime.now().strftime("%Y-%m-%d")
+    return f"public_pgdump_{today}_EMQ@localhost.txt.zst"
+
+
+def get_todays_url() -> str:
+    filename = get_todays_filename()
+    encoded_filename = filename.replace("@", "%40")
+    return f"{BASE_URL}{encoded_filename}"
+
+
+def check_7zip() -> bool:
+    for cmd in ["7z", "7za"]:
+        try:
+            result = subprocess.run(
+                [cmd, "--help"],
+                capture_output=True,
+                timeout=5,
+                shell=True if os.name == "nt" else False
+            )
+            if result.returncode == 0:
+                return True
+        except (subprocess.SubprocessError, FileNotFoundError):
+            continue
+    return False
+
+
+def extract_zst_with_7z(zst_path: Path, output_dir: Path, verbose: bool) -> bool:
+    if not check_7zip():
+        if verbose:
+            print("  ⚠ 7-Zip not found. Please install 7-Zip or use a local dump file.")
+        return False
+    
+    cmd = ["7z", "e", str(zst_path), f"-o{output_dir}", "-y"]
+    if verbose:
+        print(f"  Running: {' '.join(cmd)}")
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode == 0:
+            return True
+        else:
+            if verbose:
+                print(f"  7-Zip error: {result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        if verbose:
+            print("  Extraction timed out after 5 minutes")
+        return False
+    except Exception as e:
+        if verbose:
+            print(f"  Extraction error: {e}")
+        return False
+
+
+def download_file(url: str, dest_path: Path, verbose: bool) -> bool:
+    try:
+        if verbose:
+            print(f"  Downloading: {url}")
+            print(f"  To: {dest_path}")
+        
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "EMQ-Ranking-Builder/1.0", "Accept": "*/*"}
+        )
+        
+        with urllib.request.urlopen(req, timeout=60) as response:
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            
+            with open(dest_path, "wb") as out_file:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+                    downloaded += len(chunk)
+                    if verbose and total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        print(f"\r    Progress: {percent:.1f}% ({downloaded/1024/1024:.1f} MB / {total_size/1024/1024:.1f} MB)", end="", flush=True)
+            
+            if verbose:
+                print()
+        
+        return dest_path.exists() and dest_path.stat().st_size > 0
+    
+    except Exception as e:
+        if verbose:
+            print(f"\n  Download error: {e}")
+        return False
+
+
+def get_dump_file(dump_arg: str | None, verbose: bool) -> Path | None:
+    if dump_arg:
+        dump_path = Path(dump_arg)
+        if dump_path.exists():
+            if verbose:
+                print(f"  Using local dump: {dump_path}")
+            return dump_path
+        else:
+            print(f"  ERROR: Local file not found: {dump_path}")
+            return None
+    
+    print("\n  No local dump provided. Attempting to download latest dump...")
+    
+    filename = get_todays_filename()
+    zst_path = Path(tempfile.gettempdir()) / filename
+    txt_filename = filename.replace(".zst", "")
+    txt_path = Path(tempfile.gettempdir()) / txt_filename
+    
+    if zst_path.exists():
+        age_hours = (datetime.now() - datetime.fromtimestamp(zst_path.stat().st_mtime)).total_seconds() / 3600
+        if age_hours < 24:
+            if verbose:
+                print(f"  Found recent download: {zst_path} ({age_hours:.1f} hours old)")
+            if txt_path.exists():
+                if verbose:
+                    print(f"  Using previously extracted file: {txt_path}")
+                return txt_path
+        else:
+            if verbose:
+                print(f"  Download is {age_hours:.1f} hours old, re-downloading...")
+            zst_path.unlink()
+    
+    url = get_todays_url()
+    if verbose:
+        print(f"  Today's dump: {filename}")
+        print(f"  Download URL: {url}")
+    
+    if not download_file(url, zst_path, verbose):
+        print(f"  ERROR: Failed to download {url}")
+        return None
+    
+    print(f"  Downloaded: {zst_path.name} ({zst_path.stat().st_size / 1024 / 1024:.1f} MB)")
+    
+    if not check_7zip():
+        print("\n  ERROR: 7-Zip not found. Please install 7-Zip or provide a local dump file.")
+        print("  Download 7-Zip from: https://www.7-zip.org/")
+        return None
+    
+    print(f"  Extracting {filename}...")
+    if extract_zst_with_7z(zst_path, Path(tempfile.gettempdir()), verbose):
+        if txt_path.exists():
+            print(f"  Extracted: {txt_filename} ({txt_path.stat().st_size / 1024 / 1024:.1f} MB)")
+            zst_path.unlink()
+            if verbose:
+                print(f"  Deleted: {zst_path.name}")
+            return txt_path
+        else:
+            print(f"  ERROR: Extraction completed but {txt_filename} not found")
+            return None
+    else:
+        print("  ERROR: Extraction failed")
+        return None
+
+
+def cleanup_temp_file(file_path: Path, verbose: bool):
+    if file_path and file_path.exists():
+        try:
+            file_path.unlink()
+            if verbose:
+                print(f"  Deleted: {file_path.name}")
+        except Exception as e:
+            if verbose:
+                print(f"  Warning: Could not delete {file_path.name}: {e}")
 
 
 # ── Streaming parser ──────────────────────────────────────────────────────────
 def stream_tables(path: Path, verbose: bool):
-    """
-    Yield (table_name, {col: value, ...}) for every row in a needed table,
-    streaming the file line-by-line.
+    copy_re = re.compile(r"^COPY public\.(\w+)\s*\(([^)]+)\)\s*FROM stdin;", re.IGNORECASE)
 
-    Handles:
-      - COPY public.tablename (col1, col2, ...) FROM stdin;
-      - Tab-separated data rows
-      - \\N for NULL  →  empty string
-      - Terminator \\. on its own line
-    """
-    # Pre-compile the COPY header pattern
-    copy_re = re.compile(
-        r"^COPY public\.(\w+)\s*\(([^)]+)\)\s*FROM stdin;",
-        re.IGNORECASE
-    )
+    current_table = None
+    current_cols = None
+    current_schema = None
+    col_map = None
+    rows_parsed = 0
 
-    current_table   = None   # name if inside a needed COPY block, else None
-    current_cols    = None   # column names from the COPY header
-    current_schema  = None   # column names from NEEDED (may differ in order)
-    col_map         = None   # list of indices: schema position → file column index
-    rows_parsed     = 0
-    tables_seen     = set()
-
-    encoding = "utf-8"
-
-    with open(path, encoding=encoding, errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
-            # Strip trailing newline (keep content)
             line = line.rstrip("\n").rstrip("\r")
 
-            # ── End of COPY block ─────────────────────────────────────────
             if line == "\\.":
                 if current_table and verbose:
                     print(f"    {current_table}: {rows_parsed:,} rows")
-                current_table  = None
-                current_cols   = None
+                current_table = None
+                current_cols = None
                 current_schema = None
-                col_map        = None
-                rows_parsed    = 0
+                col_map = None
+                rows_parsed = 0
                 continue
 
-            # ── Inside a needed COPY block: parse data row ────────────────
             if current_table is not None:
                 if not line:
                     continue
                 parts = line.split("\t")
-                # Map file columns → schema columns using col_map
                 row = {}
                 for schema_i, file_i in enumerate(col_map):
                     raw = parts[file_i] if file_i < len(parts) else ""
@@ -121,21 +301,17 @@ def stream_tables(path: Path, verbose: bool):
                 yield current_table, row
                 continue
 
-            # ── Look for COPY header ──────────────────────────────────────
             m = copy_re.match(line)
             if not m:
                 continue
 
             tname = m.group(1)
             if tname not in NEEDED:
-                continue  # skip tables we don't need
+                continue
 
-            tables_seen.add(tname)
-            file_cols   = [c.strip() for c in m.group(2).split(",")]
+            file_cols = [c.strip() for c in m.group(2).split(",")]
             schema_cols = NEEDED[tname]
 
-            # Build a mapping: for each schema column, find its index in file_cols
-            # (the dump may have different column order than our schema definition)
             col_map_built = []
             ok = True
             for sc in schema_cols:
@@ -150,16 +326,14 @@ def stream_tables(path: Path, verbose: bool):
                 print(f"  ⚠  Skipping {tname} due to column mismatch")
                 continue
 
-            current_table  = tname
-            current_cols   = file_cols
+            current_table = tname
+            current_cols = file_cols
             current_schema = schema_cols
-            col_map        = col_map_built
-            rows_parsed    = 0
+            col_map = col_map_built
+            rows_parsed = 0
 
             if verbose:
                 print(f"  → Streaming {tname} …")
-
-    return tables_seen
 
 
 # ── Build indexes from streamed rows ──────────────────────────────────────────
@@ -177,23 +351,16 @@ def build_db(dump_path: Path, verbose: bool):
 
     t0 = time.time()
 
-    # We collect each needed table's data as we stream.
-    # Only keep the columns we actually use in the join.
-
-    # artist_alias: alias_id → {n: latin, nj: non_latin}
+    # Data structures
     alias_idx: dict[str, dict] = {}
-    # artist_music: music_id → [{a: alias_id, r: role}]
-    am_idx: dict[str, list]    = {}
-    # music_source_title: source_id → {gt, gtj} (main title wins)
+    am_idx: dict[str, list] = {}
     src_title_idx: dict[str, dict] = {}
-    # music_source_external_link: source_id → vndb_id (first VNDB link wins)
-    src_vndb_idx: dict[str, str]   = {}
-    # music_source_music: music_id → {s: source_id, st: song_type}
-    msm_idx: dict[str, dict]       = {}
-    # music_external_link: music_id → {au: url, ad: duration}
-    audio_idx: dict[str, dict]     = {}
-    # music_title rows (main only) collected for final join
-    title_rows: list[dict]         = []
+    src_vndb_idx: dict[str, str] = {}
+    msm_idx: dict[str, dict] = {}
+    
+    # Store ALL media links per song, then choose best one
+    media_links: dict[str, list] = {}  # music_id -> list of (type, is_video, duration_sec, url)
+    title_rows: list[dict] = []
 
     tables_found: set[str] = set()
     row_counts: dict[str, int] = {t: 0 for t in NEEDED}
@@ -204,7 +371,7 @@ def build_db(dump_path: Path, verbose: bool):
 
         if tname == "artist_alias":
             alias_idx[row["id"]] = {
-                "n":  row["latin_alias"],
+                "n": row["latin_alias"],
                 "nj": row["non_latin_alias"],
             }
 
@@ -218,7 +385,7 @@ def build_db(dump_path: Path, verbose: bool):
             sid = row["music_source_id"]
             if row["is_main_title"] == "t" or sid not in src_title_idx:
                 src_title_idx[sid] = {
-                    "gt":  row["latin_title"],
+                    "gt": row["latin_title"],
                     "gtj": row["non_latin_title"],
                 }
 
@@ -234,19 +401,29 @@ def build_db(dump_path: Path, verbose: bool):
             mid = row["music_id"]
             if mid not in msm_idx:
                 msm_idx[mid] = {
-                    "s":  row["music_source_id"],
+                    "s": row["music_source_id"],
                     "st": int(row["type"]) if row["type"].isdigit() else 0,
                 }
 
         elif tname == "music_external_link":
-            if row["type"] == "2":
-                mid = row["music_id"]
-                if mid not in audio_idx:
-                    url = row["url"].replace(URL_REPLACE_FROM, URL_REPLACE_TO)
-                    audio_idx[mid] = {
-                        "au": url,
-                        "ad": row["duration"],
-                    }
+            mid = row["music_id"]
+            # Type 2 = audio, Type 1 = video? Let's check both
+            media_type = int(row["type"]) if row["type"].isdigit() else 0
+            is_video = row["is_video"] == "t"
+            duration_sec = parse_duration(row["duration"])
+            url = row["url"].replace(URL_REPLACE_FROM, URL_REPLACE_TO)
+            
+            if mid not in media_links:
+                media_links[mid] = []
+            
+            media_links[mid].append({
+                "type": media_type,
+                "is_video": is_video,
+                "duration": duration_sec,
+                "duration_str": row["duration"],
+                "url": url,
+                "submitted_by": row.get("submitted_by", "")
+            })
 
         elif tname == "music_title":
             if row["is_main_title"] == "t":
@@ -254,12 +431,10 @@ def build_db(dump_path: Path, verbose: bool):
 
     elapsed = time.time() - t0
 
-    # ── Report what was found ────────────────────────────────────────────────
     print(f"\n  Streaming complete in {elapsed:.1f}s\n")
     missing = set(NEEDED) - tables_found
     if missing:
-        print(f"  ⚠  Tables NOT found in dump: {', '.join(sorted(missing))}")
-        print("     Check that this is a full EMQ dump (pg_dump -f dump.txt EMQ)\n")
+        print(f"  ⚠  Tables NOT found in dump: {', '.join(sorted(missing))}\n")
     else:
         print("  All 7 needed tables found.\n")
 
@@ -272,8 +447,10 @@ def build_db(dump_path: Path, verbose: bool):
         print("\nERROR: music_title has no main-title rows. Cannot build db.json.")
         sys.exit(1)
 
-    # ── Join song records ────────────────────────────────────────────────────
+    # ── Join song records with best media selection ───────────────────────────
     print(f"\n  Joining {len(title_rows):,} song records…")
+    print("  Media selection priority: shortest video > shortest audio > any other")
+    
     songs: list[dict] = []
     seen_ids: set[str] = set()
 
@@ -283,41 +460,77 @@ def build_db(dump_path: Path, verbose: bool):
             continue
         seen_ids.add(mid)
 
-        src      = msm_idx.get(mid, {})
-        sid      = src.get("s")
-        st       = src.get("st", 0)
-        src_t    = src_title_idx.get(sid, {}) if sid else {}
-        vndb_id  = src_vndb_idx.get(sid)      if sid else None
-        audio    = audio_idx.get(mid, {})
+        src = msm_idx.get(mid, {})
+        sid = src.get("s")
+        st = src.get("st", 0)
+        src_t = src_title_idx.get(sid, {}) if sid else {}
+        vndb_id = src_vndb_idx.get(sid) if sid else None
+        
+        # Select best media link
+        best_media = None
+        links = media_links.get(mid, [])
+        
+        if links:
+            # Separate by type
+            videos = [l for l in links if l["is_video"]]
+            audios = [l for l in links if not l["is_video"] and l["type"] == 2]
+            
+            # Priority 1: Shortest video
+            if videos:
+                videos.sort(key=lambda x: x["duration"])
+                best_media = videos[0]
+                if verbose:
+                    print(f"    Song {mid}: selected video ({best_media['duration_str']}) over {len(videos)} video(s)")
+            
+            # Priority 2: Shortest audio
+            elif audios:
+                audios.sort(key=lambda x: x["duration"])
+                best_media = audios[0]
+                if verbose:
+                    print(f"    Song {mid}: selected audio ({best_media['duration_str']}) over {len(audios)} audio(s)")
+            
+            # Priority 3: Any other link
+            else:
+                links.sort(key=lambda x: x["duration"])
+                best_media = links[0]
+                if verbose:
+                    print(f"    Song {mid}: selected other media ({best_media['duration_str']})")
 
-        # Build artists list, deduplicate alias IDs
+        # Build artists list
         artist_entries = am_idx.get(mid, [])
         artists: list[dict] = []
-        seen_alias: set[str] = set()
+        seen_alias_role: set[tuple] = set()
         for e in artist_entries:
             aid = e["a"]
-            if aid in seen_alias:
+            role = int(e["r"]) if e["r"].isdigit() else 0
+            if (aid, role) in seen_alias_role:
                 continue
-            seen_alias.add(aid)
+            seen_alias_role.add((aid, role))
             al = alias_idx.get(aid)
             if al and al["n"]:
-                entry: dict = {"n": al["n"], "r": int(e["r"]) if e["r"].isdigit() else 0}
+                entry: dict = {"n": al["n"], "r": role}
                 if al["nj"]:
                     entry["nj"] = al["nj"]
                 artists.append(entry)
 
         song: dict = {
-            "id":  mid,
-            "t":   row["latin_title"],
-            "tj":  row["non_latin_title"],
-            "gt":  src_t.get("gt", ""),
+            "id": mid,
+            "t": row["latin_title"],
+            "tj": row["non_latin_title"],
+            "gt": src_t.get("gt", ""),
             "gtj": src_t.get("gtj", ""),
-            "st":  st,
+            "st": st,
             "vid": vndb_id,
-            "au":  audio.get("au"),
-            "ad":  audio.get("ad"),
-            "ar":  artists,
+            "ar": artists,
         }
+        
+        # Add best media if found
+        if best_media:
+            song["au"] = best_media["url"]
+            song["ad"] = best_media["duration_str"]
+            # Also track if it's video for debugging
+            if best_media["is_video"]:
+                song["is_video"] = True
 
         # Strip empty/null optional fields to save space
         for k in ("tj", "gtj", "vid", "au", "ad"):
@@ -331,54 +544,66 @@ def build_db(dump_path: Path, verbose: bool):
     print(f"  Built {len(songs):,} songs.")
 
     # Stats
-    has_vndb  = sum(1 for s in songs if s.get("vid"))
+    has_vndb = sum(1 for s in songs if s.get("vid"))
     has_audio = sum(1 for s in songs if s.get("au"))
-    has_ar    = sum(1 for s in songs if s.get("ar"))
+    has_video = sum(1 for s in songs if s.get("is_video"))
+    has_ar = sum(1 for s in songs if s.get("ar"))
+    
     print(f"\n  Coverage:")
     print(f"    VNDB IDs   : {has_vndb:>8,} / {len(songs):,}")
-    print(f"    Audio URLs : {has_audio:>8,} / {len(songs):,}")
+    print(f"    Media URLs : {has_audio:>8,} / {len(songs):,}")
+    print(f"      - Video  : {has_video:>8,}")
+    print(f"      - Audio  : {has_audio - has_video:>8,}")
     print(f"    Artists    : {has_ar:>8,} / {len(songs):,}")
 
     return {
         "version": 1,
-        "built":   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "count":   len(songs),
-        "songs":   songs,
+        "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "count": len(songs),
+        "songs": songs,
     }
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(
-        description="Build db.json from a plain-text pg_dump SQL file",
+        description="Build db.json from a plain-text pg_dump SQL file (auto-downloads latest dump)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("dump", metavar="dump.txt",
-                    help="Plain-text pg_dump file (pg_dump -f dump.txt EMQ)")
+    ap.add_argument("dump", nargs="?", metavar="dump.txt", default=None,
+                    help="Plain-text pg_dump file (optional - if omitted, downloads latest dump)")
     ap.add_argument("--out", default="db.json", metavar="FILE",
                     help="Output path (default: db.json)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="Print table names as they are streamed")
     args = ap.parse_args()
 
-    dump_path = Path(args.dump)
-    if not dump_path.is_file():
-        sys.exit(f"ERROR: File not found: {args.dump}")
+    dump_path = get_dump_file(args.dump, args.verbose)
+    if not dump_path:
+        sys.exit(1)
 
-    db = build_db(dump_path, args.verbose)
+    is_temp = args.dump is None
+    temp_dump_path = dump_path if is_temp else None
 
-    out_path = Path(args.out)
-    print(f"\n  Writing {out_path} …", end="", flush=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(db, f, ensure_ascii=False, separators=(",", ":"))
-    size_mb = out_path.stat().st_size / 1024 / 1024
-    print(f" done  ({size_mb:.1f} MB)")
+    try:
+        db = build_db(dump_path, args.verbose)
 
-    print(f"\n{'='*60}")
-    print(f"  ✓  {out_path}  ({size_mb:.1f} MB, {db['count']:,} songs)")
-    print(f"{'='*60}")
-    print(f"\n  → Place db.json alongside index.html in your GitHub repo.\n")
+        out_path = Path(args.out)
+        print(f"\n  Writing {out_path} …", end="", flush=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, separators=(",", ":"))
+        size_mb = out_path.stat().st_size / 1024 / 1024
+        print(f" done  ({size_mb:.1f} MB)")
+
+        print(f"\n{'='*60}")
+        print(f"  ✓  {out_path}  ({size_mb:.1f} MB, {db['count']:,} songs)")
+        print(f"{'='*60}")
+        print(f"\n  → Place db.json alongside index.html in your GitHub repo.\n")
+
+    finally:
+        if temp_dump_path and temp_dump_path.exists():
+            cleanup_temp_file(temp_dump_path, args.verbose)
 
 
 if __name__ == "__main__":

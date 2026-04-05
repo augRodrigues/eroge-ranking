@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 """
-EMQ Ranking Builder — Video Renderer
-====================================
-Reads playlist.json (exported from the browser app), downloads VNDB cover art,
-renders a futuristic UI overlay (Pillow), and composites local video/audio with FFmpeg.
-
-Video files (webm, mp4, …) are scaled into a 16:9 main window; audio-only files
-(mp3, ogg, …) show a “sound only” panel. Set `local_file` to a basename (same
-folder as this script or the playlist) or an absolute path.
-
-Requirements:
-    pip install Pillow requests
-    ffmpeg on PATH
+EMQ Ranking Builder — Video Renderer (with authenticated download support)
+=========================================================================
+Downloads audio/video files from protected endpoints using session cookies.
+Media files are stored persistently in a 'media' folder and never deleted.
 
 Usage:
-    python render_video.py playlist.json
-    python render_video.py playlist.json --out ranking.mp4
+    python render_video.py                    # Uses playlist.json, cookies.json, crf=18, preset=slow
+    python render_video.py my_playlist.json   # Specify custom playlist
+    python render_video.py --force-render     # Force re-render all clips
+    python render_video.py --out custom.mp4   # Custom output name
 """
 
 import argparse
@@ -25,8 +19,10 @@ import os
 import shutil
 import subprocess
 import sys
+import hashlib
 from collections import defaultdict
 from pathlib import Path
+from datetime import datetime
 
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
@@ -42,7 +38,6 @@ except ImportError:
 # ─── CONSTANTS ────────────────────────────────────────────────────────────────
 TYPE_COLOR = {1: "#e8c547", 2: "#3ecfac", 3: "#6ba4f5", 4: "#a48ef8", 0: "#7a7a98"}
 TYPE_ABBR = {1: "OP", 2: "ED", 3: "INS", 4: "BGM", 0: "OTHER"}
-# UI: cool cyan/blue accent (does not compete with video)
 UI_CYAN = (45, 180, 230, 255)
 UI_CYAN_DIM = (45, 180, 230, 160)
 UI_BLUE_GLOW = (55, 140, 220, 200)
@@ -182,7 +177,6 @@ def wrap_text(draw, text, font, x, y, max_w, line_h, fill, max_lines=3):
 
 
 def layout_rects(W, H):
-    """~82% width main column: 16:9 video, progress line, bottom bar; narrow right panel."""
     margin = max(12, int(W * 0.018))
     rw = int(W * 0.18)
     left_w = W - rw - margin
@@ -284,7 +278,6 @@ def fit_text_width(font, text, max_w):
 
 
 def build_cal_segments(artists):
-    """Composer / Arranger / Lyricist with merged roles per name."""
     role_letter = {2: "C", 5: "A", 6: "L"}
     colors = {"C": CAL_C, "A": CAL_A, "L": CAL_L}
     order = {"C": 0, "A": 1, "L": 2}
@@ -333,7 +326,6 @@ def draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, accent_rgb, fonts):
         bg = ImageEnhance.Color(bg).enhance(0.75)
         inner = bg.convert("RGBA")
 
-    # Radial vignette (darken toward edges), low-res then upscale
     pxw, pxh = max(32, vw // 6), max(32, vh // 6)
     vig_small = Image.new("L", (pxw, pxh), 0)
     mx, my = pxw / 2.0, pxh / 2.0
@@ -403,10 +395,6 @@ def _glow_line(draw, p0, p1, color, width=2):
 
 
 def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
-    """
-    Full-frame RGBA overlay. Video area is transparent when has_video_window.
-    Progress track (grey) is drawn for FFmpeg to overlay the shrinking timer bar.
-    """
     L = layout_rects(W, H)
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
@@ -464,7 +452,6 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
 
     draw = ImageDraw.Draw(canvas)
 
-    # Progress track (FFmpeg draws shrinking fill on top)
     px, py, pww, ph = L["prog_x"], L["prog_y"], L["prog_w"], L["prog_h"]
     track_pad = 1
     draw.rounded_rectangle(
@@ -647,20 +634,200 @@ def download_cover(url, dest, session):
         return None
 
 
-def resolve_media_path(local_file, playlist_path):
-    lf = (local_file or "").strip()
-    if not lf:
+def load_auth_session(cookie_file=None, token=None):
+    """Create a requests session with authentication."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 EMQ-Ranking-Builder/5",
+        "Accept": "video/webm,video/mp4,audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://erogemusicquiz.com/",
+        "Origin": "https://erogemusicquiz.com",
+        "Connection": "keep-alive",
+    })
+    
+    if token:
+        session.headers["Authorization"] = f"Bearer {token}"
+        print("  Using bearer token authentication")
+        return session
+    
+    if cookie_file and os.path.isfile(cookie_file):
+        try:
+            with open(cookie_file, "r") as f:
+                cookies_data = json.load(f)
+            for cookie in cookies_data:
+                if isinstance(cookie, dict):
+                    session.cookies.set(
+                        cookie.get("name", ""),
+                        cookie.get("value", ""),
+                        domain=cookie.get("domain", "erogemusicquiz.com"),
+                        path=cookie.get("path", "/"),
+                        secure=cookie.get("secure", False),
+                    )
+            print(f"  Loaded {len(session.cookies)} cookies from {cookie_file}")
+            print(f"  Cookies: {list(session.cookies.keys())}")
+        except Exception as e:
+            print(f"  Warning: Failed to load cookies: {e}")
+    
+    return session
+
+
+def download_media_file(media_url, dest_path, session, media_type="audio"):
+    """Download media file (audio or video) from authenticated endpoint."""
+    if not media_url:
         return None
-    p = Path(lf)
-    if p.is_file():
-        return p
-    script_dir = Path(__file__).resolve().parent
-    pl_parent = Path(playlist_path).resolve().parent
-    for base in (pl_parent, script_dir, Path.cwd()):
-        cand = (base / lf).resolve()
-        if cand.is_file():
-            return cand
-    return p
+    
+    # Check if file already exists and is valid
+    if dest_path and dest_path.is_file() and dest_path.stat().st_size > 1024:
+        print(f"    Using existing file: {dest_path.name}")
+        return dest_path
+    
+    try:
+        file_type = "Video" if media_type == "video" else "Audio"
+        print(f"    Downloading {file_type}: {media_url.split('/')[-1][:50]}...")
+        
+        headers = {
+            "Range": "bytes=0-",
+            "Accept": "video/webm,video/mp4,audio/webm,audio/ogg,audio/mp3,*/*;q=0.8",
+            "Referer": "https://erogemusicquiz.com/",
+            "Origin": "https://erogemusicquiz.com",
+        }
+        
+        # Download the file with streaming
+        resp = session.get(media_url, timeout=120, stream=True, headers=headers)
+        
+        if resp.status_code == 401:
+            print("    ✗ Authentication failed (401). Cookies may be expired.")
+            return None
+        if resp.status_code == 403:
+            print("    ✗ Access forbidden (403). Check your permissions.")
+            return None
+        if resp.status_code == 404:
+            print("    ✗ Media URL not found (404).")
+            return None
+        
+        resp.raise_for_status()
+        
+        # Get total size if available
+        total_size = int(resp.headers.get("content-length", 0))
+        
+        # Ensure parent directory exists
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Download with progress
+        downloaded = 0
+        with open(dest_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size and total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        if int(percent) % 10 == 0:
+                            print(f"\r    Downloading: {percent:.1f}%", end="", flush=True)
+        
+        if total_size:
+            print(f"\r    Downloaded {file_type}: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
+        else:
+            print(f"\r    Downloaded {file_type}: {dest_path.name} ({downloaded/1024/1024:.1f} MB)    ")
+        
+        return dest_path
+        
+    except requests.exceptions.RequestException as e:
+        print(f"    ✗ Download failed: {e}")
+        if dest_path and dest_path.exists():
+            dest_path.unlink()
+        return None
+
+
+def get_media_type_from_url(url: str) -> tuple[str, str]:
+    """
+    Determine media type and folder from URL.
+    Returns (folder_name, extension)
+    folder: 'video' or 'audio'
+    """
+    url_lower = url.lower()
+    
+    # Video extensions (including webm)
+    if url_lower.endswith('.webm'):
+        return 'video', '.webm'
+    if any(url_lower.endswith(ext) for ext in ['.mp4', '.mkv', '.avi', '.mov', '.m4v', '.wmv', '.flv']):
+        return 'video', Path(url).suffix.lower()
+    
+    # Audio extensions (weba = audio webm)
+    if url_lower.endswith('.weba'):
+        return 'audio', '.weba'
+    if any(url_lower.endswith(ext) for ext in ['.mp3', '.ogg', '.opus', '.m4a', '.aac', '.flac', '.wav']):
+        return 'audio', Path(url).suffix.lower()
+    
+    # Default to audio for unknown
+    return 'audio', '.mp3'
+
+
+def resolve_media_path_persistent(entry, playlist_path, audio_session, audio_cache, video_cache):
+    """
+    Resolve media path with persistent caching.
+    Priority: local_file > cached download > download from audio_url
+    Returns: (path, source, was_cached)
+    source: 'local', 'cached', 'downloaded', or 'missing'
+    """
+    local_file = entry.get("local_file")
+    
+    # 1. Check local file first (user-provided path)
+    if local_file:
+        lf = local_file.strip()
+        if lf:
+            p = Path(lf)
+            if p.is_file():
+                return p, "local", False
+            script_dir = Path(__file__).resolve().parent
+            pl_parent = Path(playlist_path).resolve().parent
+            for base in (pl_parent, script_dir, Path.cwd()):
+                cand = (base / lf).resolve()
+                if cand.is_file():
+                    return cand, "local", False
+    
+    # 2. Try to get from audio URL - check multiple possible field names
+    audio_url = entry.get("audio_url") or entry.get("au") or entry.get("url")
+    
+    if not audio_url:
+        audio_url = entry.get("media_url") or entry.get("audio")
+    
+    if audio_url:
+        # Determine media type and correct cache folder
+        media_type, ext = get_media_type_from_url(audio_url)
+        
+        # Choose the correct cache folder
+        if media_type == 'video':
+            cache_folder = video_cache
+        else:
+            cache_folder = audio_cache
+        
+        # Create consistent filename from URL hash
+        url_hash = hashlib.md5(audio_url.encode()).hexdigest()[:16]
+        cache_path = cache_folder / f"{url_hash}{ext}"
+        
+        # Also try to find by song ID
+        song_id = entry.get("id", "") or entry.get("song_id", "")
+        if song_id:
+            alt_path = cache_folder / f"song_{song_id}{ext}"
+            if alt_path.is_file() and not cache_path.is_file():
+                cache_path = alt_path
+        
+        # If file exists in cache, use it
+        if cache_path.is_file() and cache_path.stat().st_size > 1024:
+            return cache_path, "cached", True
+        
+        # Otherwise download if we have a session
+        if audio_session:
+            downloaded = download_media_file(audio_url, cache_path, audio_session, media_type)
+            if downloaded and downloaded.is_file():
+                return downloaded, "downloaded", False
+        else:
+            print(f"    No session available to download {audio_url[:50]}...")
+    
+    return None, "missing", False
 
 
 def media_kind(path: Path):
@@ -742,13 +909,8 @@ def make_clip_composite(
     prog_h,
     media_has_audio=True,
 ):
-    """
-    Composite: background + scaled media + overlay + progress bar (shrinks L→R as t advances).
-    Inputs: 0 = media, 1 = overlay PNG; if not media_has_audio, 2 = anullsrc (silent AAC).
-    """
     px, py, pw, ph = int(prog_x), int(prog_y), int(prog_w), max(2, int(prog_h))
     td = float(dur)
-    # drawbox ignores w= when t=fill (FFmpeg quirk) → full-width bar. Use scale+overlay instead.
     w_expr = f"{pw}-{pw}*t/{td}"
 
     if is_video:
@@ -946,7 +1108,7 @@ def concat_xfade(clips, durations, trans, out, verbose):
             "-preset",
             "fast",
             "-crf",
-            "18",
+            "24",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
@@ -959,37 +1121,110 @@ def concat_xfade(clips, durations, trans, out, verbose):
     )
 
 
+def default_playlist_path():
+    """Return default playlist.json path if it exists"""
+    if Path("playlist.json").exists():
+        return "playlist.json"
+    return None
+
+
+def default_cookies_path():
+    """Return default cookies.json path if it exists"""
+    if Path("cookies.json").exists():
+        return "cookies.json"
+    return None
+
+
 def main():
-    ap = argparse.ArgumentParser(description="EMQ Ranking Builder — Video Renderer")
-    ap.add_argument("playlist")
-    ap.add_argument("--out", default="ranking.mp4")
-    ap.add_argument("--transition", default=None, type=float)
-    ap.add_argument("--fps", default=None, type=int)
-    ap.add_argument("--width", default=None, type=int)
-    ap.add_argument("--height", default=None, type=int)
-    ap.add_argument("--crf", default=18, type=int)
-    ap.add_argument(
-        "--preset",
-        default="fast",
-        choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "veryslow"],
+    # First, check if no arguments were provided
+    no_args = len(sys.argv) == 1
+    
+    ap = argparse.ArgumentParser(
+        description="EMQ Ranking Builder — Video Renderer (with auth)",
+        usage="python render_video.py [playlist.json] [options]"
     )
-    ap.add_argument("--font", default=None)
-    ap.add_argument("--font-jp", default=None)
-    ap.add_argument("--work-dir", default="emq_work")
-    ap.add_argument("--keep-clips", action="store_true")
-    ap.add_argument("--skip-existing", action="store_true")
-    ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("playlist", nargs="?", default=None,
+                    help="Playlist JSON file (default: playlist.json if exists)")
+    ap.add_argument("--out", default="ranking.mp4",
+                    help="Output video file (default: ranking.mp4)")
+    ap.add_argument("--transition", default=None, type=float,
+                    help="Crossfade duration in seconds")
+    ap.add_argument("--fps", default=None, type=int,
+                    help="Frames per second (default: from playlist or 30)")
+    ap.add_argument("--width", default=None, type=int,
+                    help="Output width (default: from playlist or 1920)")
+    ap.add_argument("--height", default=None, type=int,
+                    help="Output height (default: from playlist or 1080)")
+    ap.add_argument("--crf", default=24, type=int,
+                    help="CRF quality (default: 18)")
+    ap.add_argument("--preset", default="slow",
+                    choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "veryslow"],
+                    help="Encoding preset (default: slow)")
+    ap.add_argument("--font", default=None,
+                    help="Path to custom Latin font")
+    ap.add_argument("--font-jp", default=None,
+                    help="Path to custom Japanese font")
+    ap.add_argument("--work-dir", default="emq_work",
+                    help="Working directory for temporary files (default: emq_work)")
+    ap.add_argument("--keep-clips", action="store_true",
+                    help="Keep temporary clip files after rendering")
+    ap.add_argument("--force-render", action="store_true",
+                    help="Force re-rendering of all clips (ignore existing clip files)")
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="Verbose output")
+    
+    # Authentication arguments
+    ap.add_argument("--cookies", default=None,
+                    help="Path to cookies.json file (default: cookies.json if exists)")
+    ap.add_argument("--token", default=None,
+                    help="Bearer token for authentication")
+    ap.add_argument("--no-download", action="store_true",
+                    help="Skip downloading audio files, use local only")
+    
+    # If no arguments, set defaults for playlist and cookies
+    if no_args:
+        sys.argv.append("--cookies")
+        sys.argv.append(default_cookies_path() if default_cookies_path() else "")
+        # We'll handle missing files gracefully
+    
     args = ap.parse_args()
+    
+    # Set default playlist if not provided and exists
+    if not args.playlist and default_playlist_path():
+        args.playlist = "playlist.json"
+        print(f"  Using default playlist: {args.playlist}")
+    
+    # Set default cookies if not provided and exists
+    if not args.cookies and default_cookies_path() and not args.token:
+        args.cookies = "cookies.json"
+        print(f"  Using default cookies: {args.cookies}")
+    
+    # Validate required files
+    if not args.playlist:
+        sys.exit("ERROR: No playlist file specified and playlist.json not found")
+    
+    if not Path(args.playlist).exists():
+        sys.exit(f"ERROR: Playlist file not found: {args.playlist}")
+    
+    if not args.no_download and not args.cookies and not args.token:
+        print("  WARNING: No authentication provided (--cookies or --token)")
+        print("  Audio downloads may fail. Use --cookies cookies.json if needed.")
+    
+    # skip_existing is True by default, False only if --force-render is specified
+    skip_existing = not args.force_render
 
     print(f"\n{'='*60}\n  EMQ Ranking Builder — Video Renderer\n{'='*60}\n")
+    
+    if skip_existing:
+        print("  Mode: SKIP EXISTING (use --force-render to re-render all clips)")
+    else:
+        print("  Mode: FORCE RENDER (re-rendering all clips)")
+    print()
 
     if not check_ffmpeg():
         sys.exit(1)
 
     pl_path = Path(args.playlist)
-    if not pl_path.is_file():
-        sys.exit(f"ERROR: {args.playlist} not found")
-
     with open(pl_path, encoding="utf-8") as f:
         pl = json.load(f)
 
@@ -1013,39 +1248,77 @@ def main():
     print(f"  Playlist:   {pl_path.name}  ({len(entries)} songs)")
     print(f"  Output:     {args.out}")
     print(f"  Size:       {W}x{H} @ {fps}fps")
-    print(f"  4:3 / non-16:9 video: {aspect_mode}")
+    print(f"  Non-16:9 video: {aspect_mode}")
     print(f"  Duration:   ~{m}m {s}s")
     print(f"  Transition: {trans}s crossfade" if trans else "  Transition: hard cuts")
+    print(f"  CRF:        {args.crf}")
+    print(f"  Preset:     {args.preset}")
 
     print("\n  Fonts:")
     fonts = load_fonts(args, W, H)
+    
+    # Setup authentication
+    audio_session = None
+    if not args.no_download:
+        print("\n  Authentication:")
+        audio_session = load_auth_session(args.cookies, args.token)
+        if not audio_session.cookies and not args.token:
+            print("    No authentication provided. Audio downloads may fail.")
+            print("    Use --cookies cookies.json to enable authenticated downloads.")
+    else:
+        print("\n  Audio downloads disabled (--no-download)")
 
+    # Create persistent directories (media folder is permanent)
     work = Path(args.work_dir)
     frames = work / "frames"
     frames.mkdir(parents=True, exist_ok=True)
     covers = work / "covers"
     covers.mkdir(exist_ok=True)
-    clips = work / "clips"
-    clips.mkdir(exist_ok=True)
+    
+    # MEDIA folder - persistent, never deleted
+    media_folder = Path("media")
+    media_folder.mkdir(exist_ok=True)
+    
+    # Audio cache inside media folder (for downloaded files)
+    audio_cache = media_folder / "audio"
+    audio_cache.mkdir(exist_ok=True)
+    
+    # Video cache inside media folder (for any video files we might download)
+    video_cache = media_folder / "video"
+    video_cache.mkdir(exist_ok=True)
+    
+    # Temporary work files (can be deleted)
+    clips_dir = work / "clips"
+    clips_dir.mkdir(exist_ok=True)
 
     sess = requests.Session()
     sess.headers["User-Agent"] = "Mozilla/5.0 EMQ-Ranking-Builder/5"
 
     print(f"\n{'─'*60}\n  Processing {len(entries)} songs\n{'─'*60}")
+    print(f"  Media files will be stored in: {media_folder.absolute()}")
+    print(f"  These files are PERSISTENT and will NOT be deleted.")
+    print(f"  Clip caching: {'ENABLED (use --force-render to disable)' if skip_existing else 'DISABLED (re-rendering all)'}")
+    print(f"{'─'*60}\n")
 
     clip_paths, durations = [], []
     no_audio = 0
+    downloaded_count = 0
+    used_cached_count = 0
+    skipped_clips_count = 0
 
     for i, entry in enumerate(entries):
         rank = entry.get("rank", i + 1)
         title = entry.get("title", "?")
         print(f"\n  [{i+1:>3}/{len(entries)}] #{rank} — {title}")
 
-        clip_path = str(clips / f"{rank:04d}.mp4")
-        if args.skip_existing and os.path.isfile(clip_path) and os.path.getsize(clip_path) > 4096:
-            print("    ✓ clip exists, skipping")
+        clip_path = str(clips_dir / f"{rank:04d}.mp4")
+        
+        # Check if clip exists and we should skip it (default behavior)
+        if skip_existing and os.path.isfile(clip_path) and os.path.getsize(clip_path) > 4096:
+            print("    ✓ clip exists, skipping (use --force-render to re-render)")
             clip_paths.append(clip_path)
             durations.append(float(entry.get("duration", 30)))
+            skipped_clips_count += 1
             continue
 
         cover_img = None
@@ -1058,12 +1331,25 @@ def main():
         else:
             print("    Cover:  none")
 
-        lf_raw = entry.get("local_file")
-        media_path = resolve_media_path(lf_raw, pl_path)
-        kind = media_kind(media_path) if media_path and media_path.is_file() else "missing"
-        is_video = kind == "video"
+        # Resolve media path with persistent caching
+        media_path, media_source, was_cached = resolve_media_path_persistent(
+            entry, pl_path, audio_session, audio_cache, video_cache
+        )
+        
+        if media_source == "downloaded":
+            downloaded_count += 1
+            print(f"    Media:  ✓ downloaded: {media_path.name}")
+        elif media_source == "cached":
+            used_cached_count += 1
+            print(f"    Media:  ✓ from cache: {media_path.name}")
+        elif media_source == "local":
+            print(f"    Media:  ✓ local: {media_path.name}")
+        else:
+            print(f"    Media:  ✗ not available")
+            no_audio += 1
 
         overlay_path = str(frames / f"{rank:04d}.png")
+        is_video = media_path and media_kind(media_path) == "video"
 
         def render_ov(hole):
             render_overlay(entry, cover_img, fonts, W, H, overlay_path, has_video_window=hole)
@@ -1075,7 +1361,6 @@ def main():
         except Exception as e:
             print(f" ✗ {e}")
             import traceback
-
             traceback.print_exc()
             continue
 
@@ -1084,7 +1369,6 @@ def main():
 
         if media_path and media_path.is_file():
             has_aud = file_has_audio(media_path)
-            print(f"    Media:  ✓ {media_path.name}  ({'video' if is_video else 'audio'})")
             ok = make_clip_composite(
                 str(media_path),
                 overlay_path,
@@ -1142,11 +1426,7 @@ def main():
                         media_has_audio=has_aud,
                     )
         else:
-            if lf_raw:
-                print(f"    Media:  ✗ not found: {lf_raw!r}  → silence")
-            else:
-                print("    Media:  ─ no local_file  → silence")
-            no_audio += 1
+            print("    Media:  ─ no media file → silence")
             ok = make_silent_clip_composite(
                 overlay_path,
                 clip_path,
@@ -1173,6 +1453,20 @@ def main():
     if not clip_paths:
         sys.exit("\nERROR: No clips generated successfully.")
 
+    # Print statistics
+    print(f"\n{'─'*60}")
+    print(f"  Statistics:")
+    if skipped_clips_count:
+        print(f"    Skipped (cached clips): {skipped_clips_count}")
+    if downloaded_count:
+        print(f"    New downloads: {downloaded_count} to media/")
+    if used_cached_count:
+        print(f"    Used from cache: {used_cached_count} media file(s)")
+    if no_audio:
+        print(f"    Missing media: {no_audio} song(s)")
+    print(f"    Total clips: {len(clip_paths)}")
+    print(f"{'─'*60}\n")
+
     print(f"\n{'─'*60}\n  Concatenating {len(clip_paths)} clips → {args.out}\n{'─'*60}")
 
     if trans > 0 and len(clip_paths) > 1:
@@ -1184,14 +1478,18 @@ def main():
     if ok and os.path.isfile(args.out):
         size_mb = os.path.getsize(args.out) / 1024 / 1024
         print(f"\n{'='*60}\n  ✓  {args.out}  ({size_mb:.1f} MB)")
-        if no_audio:
-            print(f"\n  ⚠  {no_audio} song(s) missing usable media path.")
+        print(f"\n  Media files are saved in 'media/' folder (persistent).")
+        print(f"  Clip cache is in '{work}/clips/'")
+        if skip_existing:
+            print(f"\n  To re-render all clips from scratch, use: --force-render")
         print(f"{'='*60}\n")
     else:
         sys.exit("\n  ✗ Concatenation failed.")
 
     if not args.keep_clips:
         shutil.rmtree(str(work), ignore_errors=True)
+        print(f"  Removed temporary work folder: {work}")
+        print(f"  Media folder 'media/' was preserved.\n")
 
 
 if __name__ == "__main__":
