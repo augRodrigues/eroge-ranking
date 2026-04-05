@@ -1,3 +1,4 @@
-*.mp4
 playlist.json
+cookies.json
+*.mp4
 *.txt
