@@ -349,8 +349,15 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
 <div id="pmbg">
 <div class="pm">
   <h2>Party Mode</h2>
-  <p>Enter your name. Each song gets a score from 1–10. Export your <code>scores.json</code> and send it to the host.</p>
+  <p>Enter your name and pick a profile picture. Score each song 1–10, then export your <code>scores.json</code>.</p>
   <input type="text" class="pm-inp" id="pm-name" placeholder="Your name" maxlength="40">
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
+    <div id="pm-avatar-preview" style="width:56px;height:56px;border-radius:50%;background:var(--sf);border:2px solid var(--bd);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--mu2);font-size:22px">&#9786;</div>
+    <label style="display:inline-flex;align-items:center;gap:6px;padding:7px 14px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);font-size:12px;font-weight:700;color:var(--ac);cursor:pointer">
+      <input type="file" id="pm-avatar" accept="image/*" style="display:none"> Browse avatar
+    </label>
+    <span id="pm-avatar-name" style="font-size:11px;color:var(--mu2)">No image</span>
+  </div>
   <div class="pm-btns">
     <button class="pm-canc" id="pm-canc">Cancel</button>
     <button class="pm-ok" id="pm-ok">Start scoring</button>
@@ -423,7 +430,7 @@ const RO=[1,6,2,5,3,4];
 let songs=[],idx=null,keys=[];
 let ranking=[];
 let pjson=null;
-let partyMode=false,partyName='';
+let partyMode=false,partyName='',partyAvatar='';
 // scores: Map<song_id_string, 1-10>
 let partyScores=new Map();
 const $=id=>document.getElementById(id);
@@ -789,14 +796,14 @@ $('hload').addEventListener('click',()=>$('lrf').click());
 $('lrf').addEventListener('change',async e=>{if(!e.target.files[0])return;loadFile(await rft(e.target.files[0]));e.target.value='';});
 
 // ── Party mode ──────────────────────────────────────────────────────────────
-function enterParty(name){
-  partyMode=true;partyName=name;
+function enterParty(name,avatar){
+  partyMode=true;partyName=name;partyAvatar=avatar||'';
   $('pbanner-name').textContent=name+' — party scoring';
   $('rl')._ev=false;
   render();
 }
 function exitParty(){
-  partyMode=false;partyName='';partyScores.clear();
+  partyMode=false;partyName='';partyAvatar='';partyScores.clear();
   $('rl')._ev=false;
   render();
 }
@@ -819,7 +826,8 @@ function exportScores(){
   if(!partyMode){toast('Not in party mode',true);return;}
   const unscored=ranking.filter(r=>!partyScores.get(String(r.s.id)));
   if(unscored.length&&!confirm(unscored.length+' song(s) not scored yet. Export anyway?'))return;
-  const out={type:'party_scores',version:1,participant:partyName,exported_at:new Date().toISOString(),
+  const out={type:'party_scores',version:1,participant:partyName,avatar:partyAvatar||null,
+    exported_at:new Date().toISOString(),
     scores:ranking.map(r=>({id:String(r.s.id),title:r.s.t||'',score:partyScores.get(String(r.s.id))||0}))};
   const bl=new Blob([JSON.stringify(out,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='scores_'+partyName.replace(/\s+/g,'_')+'.json';a.click();URL.revokeObjectURL(a.href);
@@ -830,17 +838,32 @@ $('hparty').addEventListener('click',()=>{
   if(!ranking.length){toast('Add songs first, then export a party template',true);return;}
   const choice=confirm('Export a party_template.json for participants?\n\nOK = Export template\nCancel = Enter party scoring mode yourself');
   if(choice)exportPartyTemplate();
-  else{$('pmbg').classList.add('open');$('pm-name').value='';setTimeout(()=>$('pm-name').focus(),50);}
+  else{$('pmbg').classList.add('open');$('pm-name').value='';
+    $('pm-avatar-preview').innerHTML='&#9786;';delete $('pm-avatar-preview').dataset.b64;
+    $('pm-avatar-name').textContent='No image';$('pm-avatar').value='';
+    setTimeout(()=>$('pm-name').focus(),50);}
 });
 $('pbanner-close').addEventListener('click',exitParty);
 $('bparty-export').addEventListener('click',exportScores);
 $('pm-canc').addEventListener('click',()=>$('pmbg').classList.remove('open'));
+$('pm-avatar').addEventListener('change',async e=>{
+  const f=e.target.files[0];if(!f)return;
+  $('pm-avatar-name').textContent=f.name;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const b64=ev.target.result;
+    $('pm-avatar-preview').innerHTML='<img src="'+b64+'" style="width:100%;height:100%;object-fit:cover">';
+    $('pm-avatar-preview').dataset.b64=b64;
+  };
+  reader.readAsDataURL(f);
+});
 $('pm-ok').addEventListener('click',()=>{
   const name=$('pm-name').value.trim();
   if(!name){$('pm-name').style.borderColor='var(--red)';return;}
   $('pm-name').style.borderColor='';
+  const avatar=$('pm-avatar-preview').dataset.b64||'';
   $('pmbg').classList.remove('open');
-  enterParty(name);
+  enterParty(name,avatar);
 });
 $('pm-name').addEventListener('keydown',e=>{if(e.key==='Enter')$('pm-ok').click();});
 
@@ -854,7 +877,10 @@ function loadFile(txt){
         return{s,dur:30,st:0,lp:''};}).filter(Boolean);
       if(miss)toast(miss+' song(s) not in DB',true);
       partyScores.clear();save();
-      $('pmbg').classList.add('open');$('pm-name').value='';setTimeout(()=>$('pm-name').focus(),50);
+      $('pmbg').classList.add('open');$('pm-name').value='';
+      $('pm-avatar-preview').innerHTML='&#9786;';delete $('pm-avatar-preview').dataset.b64;
+      $('pm-avatar-name').textContent='No image';$('pm-avatar').value='';
+      setTimeout(()=>$('pm-name').focus(),50);
       return;
     }
     const it=d.ranking||d;let miss=0;

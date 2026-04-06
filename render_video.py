@@ -13,6 +13,8 @@ Usage:
 """
 
 import argparse
+import base64
+import io
 import json
 import math
 import os
@@ -427,7 +429,293 @@ def _glow_line(draw, p0, p1, color, width=2):
         draw.line([p0, p1], fill=(r, g, b, min(255, da)), width=width + (width > 1))
 
 
-def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
+import base64
+import io
+
+
+def _make_circle_avatar(img_rgba, size):
+    """Crop image to a circle of given diameter at 2× for AA, return RGBA Image at `size`."""
+    s2 = size * 2
+    img = img_rgba.resize((s2, s2), Image.LANCZOS).convert("RGBA")
+    mask = Image.new("L", (s2, s2), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, s2 - 1, s2 - 1], fill=255)
+    out2 = Image.new("RGBA", (s2, s2), (0, 0, 0, 0))
+    out2.paste(img, mask=mask)
+    return out2.resize((size, size), Image.LANCZOS)
+
+
+def _draw_circle_ring_aa(canvas, cx, cy, diameter, ring_color, ring_width):
+    """Draw an anti-aliased thick ring by rendering at 2× and downscaling."""
+    s2 = diameter * 2
+    ring2 = Image.new("RGBA", (s2, s2), (0, 0, 0, 0))
+    rw2 = max(2, ring_width * 2)
+    ImageDraw.Draw(ring2).ellipse([rw2 // 2, rw2 // 2, s2 - rw2 // 2 - 1, s2 - rw2 // 2 - 1],
+                                   outline=ring_color, width=rw2)
+    ring = ring2.resize((diameter, diameter), Image.LANCZOS)
+    ox = cx - diameter // 2
+    oy = cy - diameter // 2
+    canvas.alpha_composite(ring, (ox, oy))
+
+
+def _load_avatar_b64(b64_str, size):
+    """Decode a base64 data-URL avatar and return a circular RGBA image, or None."""
+    if not b64_str:
+        return None
+    try:
+        if "," in b64_str:
+            b64_str = b64_str.split(",", 1)[1]
+        data = base64.b64decode(b64_str)
+        img = Image.open(io.BytesIO(data)).convert("RGBA")
+        return _make_circle_avatar(img, size)
+    except Exception:
+        return None
+
+
+def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_window, participants_data):
+    """
+    Party-rank overlay. Right panel shows round profile pics + individual scores.
+    Credits bar shows song title + CAL line only (no JP title / developer).
+    participants_data: list of {name, score, avatar_b64}
+    """
+    L = layout_rects(W, H)
+    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    # Background
+    draw.rectangle([0, 0, W, H], fill=(8, 11, 22, 255))
+    if cover_img:
+        sc = max(W / cover_img.width, H / cover_img.height) * 1.06
+        bw, bh = int(cover_img.width * sc), int(cover_img.height * sc)
+        bg = cover_img.resize((bw, bh), Image.LANCZOS)
+        bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 48))
+        bg = ImageEnhance.Brightness(bg).enhance(0.12)
+        bg = ImageEnhance.Color(bg).enhance(1.15)
+        canvas.paste(bg.convert("RGBA"), (0, 0))
+
+    vign = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    vd = ImageDraw.Draw(vign)
+    for y in range(H):
+        t = y / max(H - 1, 1)
+        a = int(100 * (0.2 + 0.8 * t))
+        vd.line([(0, y), (W, y)], fill=(6, 18, 40, a))
+    canvas = Image.alpha_composite(canvas, vign)
+
+    draw = ImageDraw.Draw(canvas)
+    tp_id = entry.get("song_type_id", 0)
+    accent = hex_rgb(TYPE_COLOR.get(tp_id, "#6ba4f5"))
+    bar_outline = (*UI_BLUE_GLOW[:3], 195)
+
+    # Corner brackets around content block
+    fx0 = L["vx"] - FRAME_PAD
+    fy0_outer = L["vy"] - FRAME_PAD
+    fx1_outer = L["vx"] + L["vw"] + FRAME_PAD
+    fy1_outer = L["bar_y"] + L["bar_h"]
+    _draw_corner_brackets(draw, (fx0, fy0_outer, fx1_outer, fy1_outer), (200, 215, 235, 85), 2, 22)
+    dsz = 3
+    for mx in (fx0 + 36, (fx0 + fx1_outer) // 2, fx1_outer - 36):
+        draw.polygon([(mx - dsz, fy0_outer), (mx + dsz, fy0_outer), (mx, fy0_outer + dsz + 2)], fill=(120, 180, 220, 70))
+
+    # Video frame
+    vx, vy, vw, vh = L["vx"], L["vy"], L["vw"], L["vh"]
+    fx0v = vx - FRAME_PAD; fy0v = vy - FRAME_PAD
+    fx1v = vx + vw + FRAME_PAD; fy1v = vy + vh + FRAME_PAD
+    draw.rounded_rectangle([fx0v, fy0v, fx1v, fy1v], radius=6, outline=bar_outline, width=2)
+    _draw_corner_brackets(draw, (fx0v, fy0v, fx1v, fy1v), (*bar_outline[:3], 130), 2, 18)
+    for i in range(0, vh, max(26, vh // 14)):
+        draw.ellipse([fx0v - 7, vy + i, fx0v - 3, vy + i + 3], fill=(*bar_outline[:3], 95))
+
+    if has_video_window:
+        canvas.paste(Image.new("RGBA", (vw, vh), (0, 0, 0, 0)), (vx, vy))
+    else:
+        draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, accent, fonts)
+
+    draw = ImageDraw.Draw(canvas)
+
+    # Progress bar
+    px, py, pww, ph = L["prog_x"], L["prog_y"], L["prog_w"], L["prog_h"]
+    draw.rounded_rectangle(
+        [px - 1, py - 1, px + pww + 1, py + ph + 1], radius=3,
+        fill=(18, 24, 38, 255), outline=(*bar_outline[:3], 80), width=1)
+
+    # ── Credits bar (party layout: song title + CAL only) ────────────────────
+    bx, by = L["bar_x0"], L["bar_y"]
+    bx1, bh = L["bar_x1"], L["bar_h"]
+    type_font = fonts["type_badge"]
+    type_w = max(52, _text_width(type_font, "OTHER") + 14)
+    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, fill=(14, 17, 30, 245))
+    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, outline=bar_outline, width=2)
+    draw.line([(bx + type_w, by + 6), (bx + type_w, by + bh - 6)], fill=(*bar_outline[:3], 90), width=1)
+
+    st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
+    tb = type_font.getbbox(st_abbr)
+    draw.text((bx + type_w // 2, by + bh // 2 - (tb[3] - tb[1]) // 2), st_abbr,
+              font=type_font, fill=(*accent[:3], 255), anchor="mm")
+
+    content_left = bx + type_w + 12
+    content_right = bx1 - 12
+    credits_cx = (content_left + content_right) // 2
+    credits_max_w = max(80, content_right - content_left)
+
+    song_t = entry.get("title", "")
+    artists = entry.get("artists", [])
+    voc = ", ".join(a["name"] for a in artists if a.get("role_id") == 1)
+    line1_core = f"{song_t} / {voc}" if voc else song_t
+    fs = max(20, min(40, int(1200 / max(len(line1_core), 12))))
+    try:
+        tf = ImageFont.truetype(fonts["lat_path"], fs) if fonts.get("lat_path") else fonts["bar_title"]
+    except Exception:
+        tf = fonts["bar_title"]
+    line1 = fit_text_width(tf, line1_core, credits_max_w)
+    tbb = tf.getbbox(line1)
+    title_h = tbb[3] - tbb[1]
+
+    cal_font = fonts["bar_cal"]
+    cal_segs = build_cal_segments(artists)
+    w_line1 = _text_width(tf, line1)
+    w_cal = segments_width(cal_font, cal_segs) if cal_segs else 0
+    gap_title_cal = max(10, int(title_h * 0.38)) if cal_segs else 0
+    try:
+        cal_bb = cal_font.getbbox("Ag")
+        cal_h = (cal_bb[3] - cal_bb[1] + 3) if cal_segs else 0
+    except Exception:
+        cal_h = 20 if cal_segs else 0
+
+    # Game title below CAL
+    game_t = (entry.get("game") or "").strip()
+    game_font = fonts["game"]
+    try:
+        game_bb = game_font.getbbox("Ag")
+        game_h = (game_bb[3] - game_bb[1] + 4) if game_t else 0
+    except Exception:
+        game_h = 20 if game_t else 0
+    gap_cal_game = 8 if game_t and cal_segs else 0
+
+    block_h = title_h + gap_title_cal + cal_h + gap_cal_game + game_h
+    y_block_top = by + max(0, (bh - block_h) // 2)
+
+    draw.text((credits_cx - w_line1 // 2, y_block_top), line1, font=tf, fill=TITLE_WHITE)
+    if cal_segs:
+        y_cal = y_block_top + title_h + gap_title_cal
+        draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
+    if game_t:
+        y_game = y_block_top + title_h + gap_title_cal + cal_h + gap_cal_game
+        game_str = fit_text_width(game_font, game_t, credits_max_w)
+        draw_hcentered_line(draw, game_str, game_font, credits_cx, y_game, LABEL_GREY)
+
+    # ── Right panel: rank + participant grid ─────────────────────────────────
+    rx0, rx1 = L["rx0"], L["rx1"]
+    pw = rx1 - rx0
+    pcx = (rx0 + rx1) // 2
+    py0 = L["top_m"]
+    panel_bottom = L["bar_y"] + L["bar_h"]
+    draw.rounded_rectangle([rx0 - 5, py0, rx1 + 5, panel_bottom], radius=10, fill=(10, 14, 28, 238))
+    _glow_line(draw, (rx0 - 5, py0 + 36), (rx0 - 5, panel_bottom), (*bar_outline[:3], 120), 2)
+
+    # Rank number
+    rank = entry.get("rank", 0)
+    rh = int(pw * 0.26)
+    draw.text((pcx, py0 + rh // 2), f"#{rank}", font=fonts["rank_big"],
+              fill=(235, 242, 255, 255), anchor="mm")
+
+    # ── Participant grid layout ───────────────────────────────────────────────
+    n = len(participants_data)
+    grid_top = py0 + rh + 6
+    grid_bottom = panel_bottom - 28   # leave room for avg score at bottom
+    grid_h = max(1, grid_bottom - grid_top)
+    grid_w = pw - 4
+
+    # Decide columns: try 2 cols first, fall back to 1 if avatars would be too small
+    MIN_AV = max(36, H // 22)   # minimum readable avatar diameter
+    for cols in (2, 1):
+        rows = math.ceil(n / cols)
+        cell_w = grid_w // cols
+        cell_h = grid_h // rows if rows > 0 else grid_h
+        # name font size: fit name within cell_w, at least MIN readable
+        name_sz = max(10, min(H // 62, cell_w // 5))
+        name_font, _ = find_font(LATIN_FONTS, name_sz)
+        name_line_h = name_sz + 4
+        # avatar fills remaining cell height minus name row
+        av_d = min(cell_w - 4, cell_h - name_line_h - 4)
+        if av_d >= MIN_AV or cols == 1:
+            av_d = max(MIN_AV, av_d)
+            break
+
+    # Score font: ~40% of avatar diameter, bold feel
+    score_sz = max(12, int(av_d * 0.38))
+    score_font, _ = find_font(LATIN_FONTS, score_sz)
+
+    # Score extremes for coloring
+    scored = [p["score"] for p in participants_data if p["score"] > 0]
+    max_sc = max(scored) if scored else -1
+    min_sc = min(scored) if scored else -1
+
+    for idx_p, p in enumerate(participants_data):
+        col = idx_p % cols
+        row = idx_p // cols
+        # cell center x
+        cx_cell = rx0 + 2 + col * cell_w + cell_w // 2
+        # cell top y
+        cy_cell = grid_top + row * cell_h
+
+        # ── Name label — sized to fit within avatar width ─────────────────
+        name_str = p["name"]
+        # truncate until it fits within av_d
+        while name_str and _text_width(name_font, name_str) > av_d:
+            name_str = name_str[:-1]
+        if name_str != p["name"]:
+            name_str = name_str[:-1] + "…"
+        nw = _text_width(name_font, name_str)
+        draw.text((cx_cell - nw // 2, cy_cell + 2), name_str,
+                  font=name_font, fill=(200, 210, 230, 220))
+
+        # ── Avatar circle ─────────────────────────────────────────────────
+        av_cx = cx_cell
+        av_cy = cy_cell + name_line_h + av_d // 2
+
+        avatar_img = _load_avatar_b64(p.get("avatar_b64", ""), av_d)
+        if avatar_img:
+            canvas.alpha_composite(avatar_img, (av_cx - av_d // 2, av_cy - av_d // 2))
+        else:
+            # Placeholder filled circle
+            draw.ellipse([av_cx - av_d // 2, av_cy - av_d // 2,
+                          av_cx + av_d // 2, av_cy + av_d // 2],
+                         fill=(20, 26, 44, 255))
+            draw.text((av_cx, av_cy), "?", font=name_font,
+                      fill=(100, 110, 140, 200), anchor="mm")
+
+        # ── Score — large text overlapping bottom of avatar ───────────────
+        sc = p["score"]
+        sc_str = str(int(sc)) if sc == int(sc) and sc > 0 else (str(sc) if sc > 0 else "–")
+        if sc > 0 and sc == max_sc and sc != min_sc:
+            sc_color = (80, 220, 120, 255)
+        elif sc > 0 and sc == min_sc and sc != max_sc:
+            sc_color = (240, 80, 80, 255)
+        else:
+            sc_color = (255, 255, 255, 240)
+
+        # Score sits at the bottom edge of the avatar, overlapping inward
+        sc_y = av_cy + av_d // 2 - score_sz // 2 - 2
+        sc_x = av_cx
+        # Dark shadow for readability
+        for ox, oy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, 2), (0, -2)):
+            draw.text((sc_x + ox, sc_y + oy), sc_str, font=score_font,
+                      fill=(0, 0, 0, 180), anchor="mm")
+        draw.text((sc_x, sc_y), sc_str, font=score_font, fill=sc_color, anchor="mm")
+
+    # Average score at bottom of panel
+    avg = entry.get("party_avg_score", 0)
+    if avg:
+        avg_font, _ = find_font(LATIN_FONTS, max(13, H // 64))
+        draw.text((pcx, panel_bottom - 14), f"avg  {avg:.1f}", font=avg_font,
+                  fill=(200, 210, 230, 190), anchor="mm")
+
+    canvas.save(out_path, "PNG")
+
+
+def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, participants_data=None):
+    if participants_data is not None:
+        return render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_window, participants_data)
     L = layout_rects(W, H)
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
@@ -1193,9 +1481,10 @@ def merge_party_scores(playlist_path: str, score_files: list[str]) -> dict:
     # Build id → entry map
     entry_map = {str(e["id"]): e for e in entries}
 
-    # Accumulate scores per song id
+    # Accumulate scores per song id, also store avatar per participant
     score_acc: dict[str, list[float]] = {sid: [] for sid in entry_map}
-    participants = []
+    participants = []       # list of {name, avatar_b64}
+    participant_scores = [] # list of {sid: score} per participant
 
     for sf in score_files:
         with open(sf, encoding="utf-8") as f:
@@ -1204,17 +1493,19 @@ def merge_party_scores(playlist_path: str, score_files: list[str]) -> dict:
             print(f"  WARNING: {sf} is not a party_scores file, skipping")
             continue
         name = data.get("participant", Path(sf).stem)
-        participants.append(name)
-        for item in data.get("scores", []):
-            sid = str(item.get("id", ""))
-            sc = float(item.get("score", 0))
+        avatar_b64 = data.get("avatar") or ""
+        participants.append({"name": name, "avatar_b64": avatar_b64})
+        sc_map = {str(item.get("id", "")): float(item.get("score", 0))
+                  for item in data.get("scores", [])}
+        participant_scores.append(sc_map)
+        for sid, sc in sc_map.items():
             if sid in score_acc:
                 score_acc[sid].append(sc)
 
     if not participants:
         sys.exit("ERROR: No valid party_scores files found")
 
-    print(f"\n  Party merge: {len(participants)} participant(s): {', '.join(participants)}")
+    print(f"\n  Party merge: {len(participants)} participant(s): {', '.join(p['name'] for p in participants)}")
 
     # Compute averages and sort descending (highest avg = rank 1)
     def avg_score(sid):
@@ -1231,21 +1522,23 @@ def merge_party_scores(playlist_path: str, score_files: list[str]) -> dict:
     for playback_pos, sid in enumerate(sorted_ids, 1):
         e = dict(entry_map[sid])
         avg = avg_score(sid)
-        display_rank = total - playback_pos + 1  # #N for worst, #1 for best
+        display_rank = total - playback_pos + 1
         e["rank"] = display_rank
         e["video_rank"] = playback_pos
         e["party_avg_score"] = round(avg, 2)
-        e["party_scores"] = {p: next(
-            (item["score"] for item in json.load(open(sf, encoding="utf-8")).get("scores", [])
-             if str(item.get("id")) == sid), 0)
-            for p, sf in zip(participants, score_files)}
+        # Per-participant scores for this song (used by renderer)
+        e["party_participants_data"] = [
+            {"name": p["name"], "avatar_b64": p["avatar_b64"],
+             "score": sc_map.get(sid, 0)}
+            for p, sc_map in zip(participants, participant_scores)
+        ]
         ranked_entries.append(e)
         print(f"    video #{playback_pos:>3} (display #{display_rank})  avg={avg:.1f}  {e.get('title','?')}")
 
     # Party rank always plays rank 1 → rank N (worst to best reveal)
     pl["entries"] = ranked_entries
-    pl["settings"]["direction"] = "desc"  # entries are already in playback order
-    pl["party_participants"] = participants
+    pl["settings"]["direction"] = "desc"
+    pl["party_participants"] = [p["name"] for p in participants]
     return pl
 
 
@@ -1474,9 +1767,11 @@ def main():
 
         overlay_path = str(frames / f"{rank:04d}.png")
         is_video = media_path and media_kind(media_path) == "video"
+        party_pd = entry.get("party_participants_data") or None
 
-        def render_ov(hole):
-            render_overlay(entry, cover_img, fonts, W, H, overlay_path, has_video_window=hole)
+        def render_ov(hole, _pd=party_pd):
+            render_overlay(entry, cover_img, fonts, W, H, overlay_path,
+                           has_video_window=hole, participants_data=_pd)
 
         print("    Overlay: rendering…", end="", flush=True)
         try:

@@ -43,7 +43,7 @@ Multiple people can score the same song list and the host renders a combined ran
 2. Click **★ Party** → **Export template**. This runs the normal VNDB fetch and downloads a single `party_template.json` — share this file with participants. No separate `playlist.json` needed.
 
 **Each participant:**
-1. Load `party_template.json` via **Load ranking** — the app detects it and asks for your name.
+1. Load `party_template.json` via **Load ranking** — the app detects it, asks for your name and a profile picture.
 2. Score each song 1–10 using the star rating. Use the **Play** button on each card to listen via EMQ.
 3. Click **↓ Export scores** → send `scores_Name.json` to the host.
 
@@ -52,7 +52,7 @@ Multiple people can score the same song list and the host renders a combined ran
 python render_video.py party_template.json --scores alice.json bob.json charlie.json
 ```
 
-Scores are averaged across participants. The video plays worst (#N) to best (#1).
+Scores are averaged across participants. The video plays worst (#N) to best (#1). The right panel shows each participant's round profile picture with their score overlaid, and the average score at the bottom.
 
 ## `render_video.py` options
 
