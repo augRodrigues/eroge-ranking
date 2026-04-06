@@ -1176,6 +1176,79 @@ def default_cookies_path():
     return None
 
 
+def merge_party_scores(playlist_path: str, score_files: list[str]) -> dict:
+    """
+    Merge multiple party scores.json files into a reordered playlist.
+    Scores are averaged across participants; ties broken by lowest song ID.
+    playlist_path may be a playlist.json or a party_template.json (superset).
+    Returns a modified playlist dict ready for rendering.
+    """
+    with open(playlist_path, encoding="utf-8") as f:
+        pl = json.load(f)
+
+    entries = pl.get("entries", [])
+    if not entries:
+        sys.exit("ERROR: Playlist has no entries")
+
+    # Build id → entry map
+    entry_map = {str(e["id"]): e for e in entries}
+
+    # Accumulate scores per song id
+    score_acc: dict[str, list[float]] = {sid: [] for sid in entry_map}
+    participants = []
+
+    for sf in score_files:
+        with open(sf, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("type") != "party_scores":
+            print(f"  WARNING: {sf} is not a party_scores file, skipping")
+            continue
+        name = data.get("participant", Path(sf).stem)
+        participants.append(name)
+        for item in data.get("scores", []):
+            sid = str(item.get("id", ""))
+            sc = float(item.get("score", 0))
+            if sid in score_acc:
+                score_acc[sid].append(sc)
+
+    if not participants:
+        sys.exit("ERROR: No valid party_scores files found")
+
+    print(f"\n  Party merge: {len(participants)} participant(s): {', '.join(participants)}")
+
+    # Compute averages and sort descending (highest avg = rank 1)
+    def avg_score(sid):
+        vals = score_acc[sid]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    sorted_ids = sorted(entry_map.keys(), key=lambda sid: (avg_score(sid), int(sid)))
+
+    total = len(sorted_ids)
+
+    # Rebuild entries: array order = playback order (worst first, best last)
+    # rank displayed on screen: first clip = #total (worst), last clip = #1 (best)
+    ranked_entries = []
+    for playback_pos, sid in enumerate(sorted_ids, 1):
+        e = dict(entry_map[sid])
+        avg = avg_score(sid)
+        display_rank = total - playback_pos + 1  # #N for worst, #1 for best
+        e["rank"] = display_rank
+        e["video_rank"] = playback_pos
+        e["party_avg_score"] = round(avg, 2)
+        e["party_scores"] = {p: next(
+            (item["score"] for item in json.load(open(sf, encoding="utf-8")).get("scores", [])
+             if str(item.get("id")) == sid), 0)
+            for p, sf in zip(participants, score_files)}
+        ranked_entries.append(e)
+        print(f"    video #{playback_pos:>3} (display #{display_rank})  avg={avg:.1f}  {e.get('title','?')}")
+
+    # Party rank always plays rank 1 → rank N (worst to best reveal)
+    pl["entries"] = ranked_entries
+    pl["settings"]["direction"] = "desc"  # entries are already in playback order
+    pl["party_participants"] = participants
+    return pl
+
+
 def main():
     # First, check if no arguments were provided
     no_args = len(sys.argv) == 1
@@ -1186,6 +1259,8 @@ def main():
     )
     ap.add_argument("playlist", nargs="?", default=None,
                     help="Playlist JSON file (default: playlist.json if exists)")
+    ap.add_argument("--scores", nargs="+", metavar="scores.json",
+                    help="Party scores files to merge (e.g. --scores alice.json bob.json)")
     ap.add_argument("--out", default="ranking.mp4",
                     help="Output video file (default: ranking.mp4)")
     ap.add_argument("--transition", default=None, type=float,
@@ -1268,6 +1343,14 @@ def main():
     pl_path = Path(args.playlist)
     with open(pl_path, encoding="utf-8") as f:
         pl = json.load(f)
+
+    # Party scores merge
+    if args.scores:
+        for sf in args.scores:
+            if not Path(sf).exists():
+                sys.exit(f"ERROR: Scores file not found: {sf}")
+        print(f"\n  Party mode: merging {len(args.scores)} score file(s)…")
+        pl = merge_party_scores(args.playlist, args.scores)
 
     entries = pl.get("entries", [])
     if not entries:
