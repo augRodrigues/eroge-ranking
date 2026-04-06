@@ -166,23 +166,6 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
   background:rgba(13,13,16,.95);border-top:1px solid var(--bd);
   backdrop-filter:blur(12px);z-index:99;display:flex;align-items:center;gap:10px}
 
-/* ── MODALS ── */
-.mbg{position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(4px);
-  z-index:500;display:none;align-items:center;justify-content:center;padding:20px}
-.mbg.open{display:flex}
-.mbox{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--r2);
-  padding:26px;width:100%;max-width:460px}
-.mbox h2{font-size:17px;font-weight:700;margin-bottom:14px}
-.minp{width:100%;padding:9px 12px;background:var(--sf);border:1px solid var(--bd);
-  border-radius:var(--r);font-size:14px;color:var(--tx);margin-bottom:10px}
-.minp:focus{border-color:var(--ac)}
-.merr{font-size:12px;color:var(--red);margin-bottom:8px;display:none}
-.mbtns{display:flex;gap:8px;justify-content:flex-end}
-.mcanc{padding:8px 16px;border-radius:var(--r);font-size:13px;
-  background:var(--sf);border:1px solid var(--bd);color:var(--mu);cursor:pointer}
-.mok{padding:8px 18px;border-radius:var(--r);font-size:13px;font-weight:700;
-  background:var(--ac);color:#0d0d10;cursor:pointer}
-
 /* ── EXPORT MODAL ── */
 #xmbg{position:fixed;inset:0;background:rgba(0,0,0,.82);backdrop-filter:blur(8px);
   z-index:600;display:none;align-items:center;justify-content:center;padding:20px}
@@ -284,7 +267,6 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
           placeholder="Search song, game, or artist&hellip;" autocomplete="off">
         <div class="sdd" id="sdd"></div>
       </div>
-      <button class="btn bg" id="urlbtn" style="white-space:nowrap">+ URL</button>
     </div>
     <div class="gbar">
       <label>Default clip</label>
@@ -312,20 +294,6 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
     <button class="btn bg sm" id="bsave">Save</button>
     <button class="btn ba sm" id="bexport">&#8659; Export playlist</button>
   </div>
-</div>
-
-<!-- URL MODAL -->
-<div class="mbg" id="urlm">
-<div class="mbox">
-  <h2>Add by EMQ link</h2>
-  <div class="merr" id="uerr"></div>
-  <input type="text" class="minp" id="uinp"
-    placeholder="https://erogemusicquiz.com/music/12345  or just  12345">
-  <div class="mbtns">
-    <button class="mcanc" id="ucanc">Cancel</button>
-    <button class="mok" id="uok">Add</button>
-  </div>
-</div>
 </div>
 
 <!-- EXPORT MODAL -->
@@ -371,10 +339,10 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
   <div class="xsl" id="xsl"></div>
   <div class="xinfo" id="xinfo" style="display:none">
     <strong>Next steps:</strong><br>
-    1. Download playlist.json (button below)<br>
-    2. Put your media files (webm/mp4/mp3/ogg &hellip;) in the <strong>same folder</strong> as <code>render_video.py</code> (or next to <code>playlist.json</code>). Names must match what you picked in the app (basename only &mdash; browsers do not expose full paths).<br>
-    3. Run: <code>python render_video.py playlist.json</code><br><br>
-    Export pulls VN titles (romaji + Japanese), developer list, and release date from VNDB when a VN id is present. Video plays in the main 16:9 window; audio-only clips use a sound-only panel. Letterbox vs stretch is in the export options.
+    1. Download <code>playlist.json</code> (button below).<br>
+    2. Run: <code>python render_video.py playlist.json</code><br>
+    The renderer will automatically download media from erogemusicquiz.com using <code>cookies.json</code>.<br><br>
+    <em>Only if you chose local files:</em> put your media files next to <code>render_video.py</code> or <code>playlist.json</code> before rendering. Filenames must match what you picked in the app.
   </div>
   <div class="xbtns">
     <button class="xdl" id="xdl">&#8659; Download playlist.json</button>
@@ -506,7 +474,7 @@ function render(){
           +'<span class="csep">·</span><span class="cll">Start</span>'
           +'<input class="cin" type="number" min="0" max="99999" value="'+st+'" data-f="s" data-i="'+i+'"> s'
         +'</div>'
-        +'<div class="clf"><span class="clfl">Media file:</span><div class="clfp">'
+        +'<div class="clf"><span class="clfl">Local file <span style="color:var(--mu2);font-weight:400">(optional)</span>:</span><div class="clfp">'
           +'<label class="clfbtn">Browse<input type="file" accept="video/*,audio/*,.webm,.mkv,.avi,.mov,.opus,.flac" data-f="file" data-i="'+i+'"></label>'
           +'<span class="clfn" title="'+esc(lp||'')+'">'+(lp?esc(lp):'<span style="color:var(--mu2)">No file selected</span>')+'</span>'
           +(lp?'<span class="clfx" data-clr="'+i+'">Clear</span>':'')
@@ -692,18 +660,6 @@ sb.addEventListener('keydown',e=>{
   else if(e.key==='Escape'){sd.classList.remove('open');}
 });
 document.addEventListener('click',e=>{if(!$('swrap').contains(e.target))sd.classList.remove('open');});
-
-$('urlbtn').addEventListener('click',()=>{$('urlm').classList.add('open');$('uinp').focus();});
-$('ucanc').addEventListener('click',closeUrl);
-$('uok').addEventListener('click',()=>{
-  const raw=$('uinp').value.trim(),m=raw.match(/(\d{3,})/);
-  if(!m){showUErr('Enter an EMQ music URL or numeric ID');return;}
-  const s=idx?.get(m[1]);if(!s){showUErr('ID '+m[1]+' not found in database');return;}
-  addSong(s);closeUrl();
-});
-$('uinp').addEventListener('keydown',e=>{if(e.key==='Enter')$('uok').click();});
-function closeUrl(){$('urlm').classList.remove('open');$('uinp').value='';$('uerr').style.display='none';}
-function showUErr(m){$('uerr').textContent=m;$('uerr').style.display='block';}
 
 $('apdur').addEventListener('click',()=>{const d=Math.max(5,parseInt($('gdur').value)||30);ranking.forEach(r=>r.dur=d);save();render();toast('Set all clips to '+d+'s');});
 $('apstart').addEventListener('click',()=>{const s=Math.max(0,parseInt($('gstart').value)||0);ranking.forEach(r=>r.st=s);save();render();toast('Set all start offsets to '+s+'s');});

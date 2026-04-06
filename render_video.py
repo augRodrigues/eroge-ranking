@@ -129,23 +129,52 @@ def load_fonts(args, W, H):
     )
 
 
+def _is_cjk(ch):
+    cp = ord(ch)
+    return (
+        0x3000 <= cp <= 0x9FFF or   # CJK unified, hiragana, katakana, punctuation
+        0xF900 <= cp <= 0xFAFF or   # CJK compatibility ideographs
+        0x20000 <= cp <= 0x2FA1F    # CJK extensions B-F
+    )
+
+
+def _wrap_cjk(font, text, max_w):
+    """Wrap text that may contain CJK characters (break at any char boundary)."""
+    lines = []
+    line = ""
+    for ch in text:
+        test = line + ch
+        if _text_width(font, test) > max_w and line:
+            lines.append(line)
+            line = ch
+        else:
+            line = test
+    if line:
+        lines.append(line)
+    return lines
+
+
 def wrap_text_centered(draw, text, font, cx, y, max_w, line_h, fill, max_lines=3):
     if not text:
         return 0
-    words = text.split(" ")
-    line, lines = "", []
-    for w in words:
-        test = (line + " " + w).strip()
-        bb = font.getbbox(test)
-        if bb[2] - bb[0] > max_w and line:
+    # Use CJK character-level wrapping if text contains CJK characters
+    if any(_is_cjk(c) for c in text):
+        lines = _wrap_cjk(font, text, max_w)[:max_lines]
+    else:
+        words = text.split(" ")
+        line, lines = "", []
+        for w in words:
+            test = (line + " " + w).strip()
+            bb = font.getbbox(test)
+            if bb[2] - bb[0] > max_w and line:
+                lines.append(line)
+                line = w
+                if len(lines) >= max_lines:
+                    break
+            else:
+                line = test
+        if line and len(lines) < max_lines:
             lines.append(line)
-            line = w
-            if len(lines) >= max_lines:
-                break
-        else:
-            line = test
-    if line and len(lines) < max_lines:
-        lines.append(line)
     h = 0
     for i, ln in enumerate(lines):
         w = _text_width(font, ln)
@@ -203,12 +232,15 @@ def layout_rects(W, H):
     prog_y = vy + vh + gap_after_vid
     bar_y = prog_y + prog_h + gap_prog_bar
     bar_h = bh
-    bar_x0 = left_x0
+
+    # Credits bar: left edge and right edge match the video frame exactly
+    bar_x0 = vx - FRAME_PAD
+    bar_x1 = vx + vw + FRAME_PAD
+    bar_w = bar_x1 - bar_x0
 
     rx0 = W - rw - margin + max(4, int(rw * 0.05))
     rx1 = W - margin - max(4, int(rw * 0.05))
     panel_w = rx1 - rx0
-    bar_w = max(120, rx0 - bar_x0 - 12)
 
     prog_x = vx - FRAME_PAD
     prog_w = vw + 2 * FRAME_PAD
@@ -223,6 +255,7 @@ def layout_rects(W, H):
         left_x0=left_x0,
         left_w=left_w,
         bar_x0=bar_x0,
+        bar_x1=bar_x1,
         bar_y=bar_y,
         bar_w=bar_w,
         bar_h=bar_h,
@@ -426,11 +459,17 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
     bar_outline = (*UI_BLUE_GLOW[:3], 195)
 
     inset = max(6, L["margin"] // 2)
-    _draw_corner_brackets(draw, (inset, inset, W - inset, H - inset), (200, 215, 235, 85), 2, 22)
+    # Corner brackets frame the content: video top-left to credits bar bottom-right
+    fx0 = L["vx"] - FRAME_PAD
+    fy0_outer = L["vy"] - FRAME_PAD
+    fx1_outer = L["vx"] + L["vw"] + FRAME_PAD
+    fy1_outer = L["bar_y"] + L["bar_h"]
+    _draw_corner_brackets(draw, (fx0, fy0_outer, fx1_outer, fy1_outer), (200, 215, 235, 85), 2, 22)
+    # Small tick marks along the top edge
     dsz = 3
-    for mx in (inset + 36, W // 2, W - inset - 36):
+    for mx in (fx0 + 36, (fx0 + fx1_outer) // 2, fx1_outer - 36):
         draw.polygon(
-            [(mx - dsz, inset), (mx + dsz, inset), (mx, inset + dsz + 2)],
+            [(mx - dsz, fy0_outer), (mx + dsz, fy0_outer), (mx, fy0_outer + dsz + 2)],
             fill=(120, 180, 220, 70),
         )
 
@@ -463,11 +502,12 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
     )
 
     bx, by, bw, bh = L["bar_x0"], L["bar_y"], L["bar_w"], L["bar_h"]
+    bx1 = L["bar_x1"]
     type_font = fonts["type_badge"]
     type_w = max(52, _text_width(type_font, "OTHER") + 14)
     bar_fill = (14, 17, 30, 245)
-    draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=8, fill=bar_fill)
-    draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=8, outline=bar_outline, width=2)
+    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, fill=bar_fill)
+    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, outline=bar_outline, width=2)
     draw.line([(bx + type_w, by + 6), (bx + type_w, by + bh - 6)], fill=(*bar_outline[:3], 90), width=1)
 
     st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
@@ -481,7 +521,7 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
     )
 
     content_left = bx + type_w + 12
-    content_right = bx + bw - 12
+    content_right = bx1 - 12
     credits_cx = (content_left + content_right) // 2
     credits_max_w = max(80, content_right - content_left)
 
@@ -526,12 +566,13 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
     pw = rx1 - rx0
     pcx = (rx0 + rx1) // 2
     py0 = L["top_m"]
+    panel_bottom = L["bar_y"] + L["bar_h"]
     draw.rounded_rectangle(
-        [rx0 - 5, py0, rx1 + 5, H - L["margin"]],
+        [rx0 - 5, py0, rx1 + 5, panel_bottom],
         radius=10,
         fill=(10, 14, 28, 238),
     )
-    _glow_line(draw, (rx0 - 5, py0 + 36), (rx0 - 5, H - L["margin"]), (*bar_outline[:3], 120), 2)
+    _glow_line(draw, (rx0 - 5, py0 + 36), (rx0 - 5, panel_bottom), (*bar_outline[:3], 120), 2)
 
     rank = entry.get("rank", 0)
     rh = int(pw * 0.26)
@@ -592,7 +633,7 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window):
     if vn_jp and vn_jp != vn_ro:
         jf = fonts["jp"]
         meta_y += wrap_text_centered(
-            draw, vn_jp, jf, pcx, meta_y, meta_max_w, 26, (210, 218, 235, 255), max_lines=2
+            draw, vn_jp, jf, pcx, meta_y, meta_max_w, 26, (210, 218, 235, 255), max_lines=3
         )
         meta_y += 8
 
