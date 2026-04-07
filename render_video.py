@@ -40,11 +40,18 @@ except ImportError:
 # ─── CONSTANTS ────────────────────────────────────────────────────────────────
 TYPE_COLOR = {1: "#e8c547", 2: "#3ecfac", 3: "#6ba4f5", 4: "#a48ef8", 0: "#7a7a98"}
 TYPE_ABBR = {1: "OP", 2: "ED", 3: "INS", 4: "BGM", 0: "OTHER"}
-UI_CYAN = (45, 180, 230, 255)
-UI_CYAN_DIM = (45, 180, 230, 160)
-UI_BLUE_GLOW = (55, 140, 220, 200)
-LABEL_GREY = (130, 138, 160, 255)
-TITLE_WHITE = (248, 250, 255, 255)
+
+# ── Glassmorphism palette ─────────────────────────────────────────────────────
+BG_BASE        = (18, 18, 18, 255)          # #121212
+PANEL_BG       = (30, 30, 46, 191)          # rgba(30,30,46,0.75) per spec
+PANEL_BORDER   = (255, 255, 255, 20)        # rgba(255,255,255,0.08) per spec
+PANEL_RADIUS   = 12
+ACCENT_VIOLET  = (139, 92, 246, 255)        # #8B5CF6
+ACCENT_PINK    = (236, 72, 153, 255)        # #EC4899
+TEXT_PRIMARY   = (226, 232, 240, 255)       # #E2E8F0
+TEXT_SECONDARY = (148, 163, 184, 200)       # #94A3B8
+FALLBACK_HUE   = (139, 92, 246)             # violet fallback if art is dark
+
 CAL_C = (255, 82, 98, 255)
 CAL_A = (52, 210, 198, 255)
 CAL_L = (255, 152, 58, 255)
@@ -334,9 +341,9 @@ def build_cal_segments(artists):
         segs = []
         for i, letter in enumerate(letters):
             if i:
-                segs.append((", ", TITLE_WHITE))
+                segs.append((", ", TEXT_PRIMARY))
             segs.append((letter, colors[letter]))
-        segs.append((" " + nm, TITLE_WHITE))
+        segs.append((" " + nm, TEXT_PRIMARY))
         blocks.append(segs)
     flat = []
     sep = (180, 188, 210, 255)
@@ -345,6 +352,114 @@ def build_cal_segments(artists):
             flat.append((" / ", sep))
         flat.extend(block)
     return flat
+
+
+def sample_dominant_color(img):
+    """Sample dominant color from center 40% of cover. Falls back to violet if too dark."""
+    if img is None:
+        return FALLBACK_HUE
+    try:
+        w, h = img.size
+        cx, cy = w // 2, h // 2
+        rw, rh = int(w * 0.4), int(h * 0.4)
+        region = img.crop((cx - rw // 2, cy - rh // 2, cx + rw // 2, cy + rh // 2))
+        small = region.resize((16, 16), Image.LANCZOS).convert("RGB")
+        pixels = list(small.getdata())
+        r = sum(p[0] for p in pixels) // len(pixels)
+        g = sum(p[1] for p in pixels) // len(pixels)
+        b = sum(p[2] for p in pixels) // len(pixels)
+        lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        if lum < 0.18:
+            return FALLBACK_HUE
+        if max(r, g, b) - min(r, g, b) < 30:
+            return FALLBACK_HUE
+        return (r, g, b)
+    except Exception:
+        return FALLBACK_HUE
+
+
+def draw_frosted_panel(canvas, box, radius=PANEL_RADIUS, tint=PANEL_BG, border=PANEL_BORDER, blur_r=16):
+    """
+    Frosted-glass panel: crop canvas region → blur → tint overlay → rounded mask → paste back.
+    """
+    x0, y0, x1, y1 = [int(v) for v in box]
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(canvas.width, x1), min(canvas.height, y1)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+
+    region = canvas.crop((x0, y0, x1, y1)).convert("RGBA")
+    blurred = region.filter(ImageFilter.GaussianBlur(radius=blur_r))
+    tint_layer = Image.new("RGBA", (w, h), tint)
+    frosted = Image.alpha_composite(blurred, tint_layer)
+
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
+
+    result = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    result.paste(frosted, mask=mask)
+    canvas.alpha_composite(result, (x0, y0))
+
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, outline=border, width=1)
+
+
+def draw_glow(canvas, cx, cy, radius, color_rgb, opacity=0.12):
+    """Soft radial glow blob."""
+    r, g, b = color_rgb
+    a = int(255 * opacity)
+    sz = radius * 2
+    glow = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    for i in range(6):
+        shrink = i * (sz // 14)
+        alpha = max(0, a - i * (a // 7))
+        gd.ellipse([shrink, shrink, sz - shrink, sz - shrink], fill=(r, g, b, alpha))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=sz // 5))
+    canvas.alpha_composite(glow, (cx - radius, cy - radius))
+
+
+def draw_bokeh(canvas, W, H, hero_rgb, count=18, max_opacity=0.08, seed=42):
+    """Scatter very subtle soft bokeh dots — small, heavily blurred, low opacity."""
+    import random
+    rng = random.Random(seed)
+    r, g, b = hero_rgb
+    for _ in range(count):
+        x = rng.randint(0, W)
+        y = rng.randint(0, H)
+        # Small dots: 4–12px radius
+        sz = rng.randint(max(2, W // 240), max(4, W // 120))
+        a = int(255 * rng.uniform(0.01, max_opacity * 0.6))
+        blob_sz = sz * 4  # render larger for blur headroom
+        blob = Image.new("RGBA", (blob_sz, blob_sz), (0, 0, 0, 0))
+        pad = blob_sz // 4
+        ImageDraw.Draw(blob).ellipse([pad, pad, blob_sz - pad, blob_sz - pad],
+                                     fill=(r, g, b, a))
+        blob = blob.filter(ImageFilter.GaussianBlur(radius=blob_sz // 3))
+        ox, oy = max(0, x - blob_sz // 2), max(0, y - blob_sz // 2)
+        # Clip to canvas bounds
+        if ox + blob_sz > W or oy + blob_sz > H:
+            blob = blob.crop((0, 0, min(blob_sz, W - ox), min(blob_sz, H - oy)))
+        canvas.alpha_composite(blob, (ox, oy))
+
+
+def draw_edge_vignette(canvas, W, H, strength=80):
+    """Dark vignette only at the edges, center stays clear."""
+    vign = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    cx, cy = W / 2, H / 2
+    max_d = math.hypot(cx, cy)
+    pxw, pxh = max(32, W // 8), max(32, H // 8)
+    small = Image.new("L", (pxw, pxh), 0)
+    for y in range(pxh):
+        for x in range(pxw):
+            d = math.hypot((x / pxw - 0.5) * W, (y / pxh - 0.5) * H) / max_d
+            v = int(strength * max(0, d - 0.45) / 0.55)
+            small.putpixel((x, y), min(255, v))
+    mask = small.resize((W, H), Image.LANCZOS)
+    dark = Image.new("RGBA", (W, H), (8, 8, 12, 0))
+    dark.putalpha(mask)
+    canvas.alpha_composite(dark)
 
 
 def draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, accent_rgb, fonts):
@@ -482,75 +597,68 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     draw = ImageDraw.Draw(canvas)
 
     # Background
-    draw.rectangle([0, 0, W, H], fill=(8, 11, 22, 255))
+    draw.rectangle([0, 0, W, H], fill=BG_BASE)
+    hero = sample_dominant_color(cover_img)
+
     if cover_img:
         sc = max(W / cover_img.width, H / cover_img.height) * 1.06
         bw, bh = int(cover_img.width * sc), int(cover_img.height * sc)
         bg = cover_img.resize((bw, bh), Image.LANCZOS)
         bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 48))
-        bg = ImageEnhance.Brightness(bg).enhance(0.12)
-        bg = ImageEnhance.Color(bg).enhance(1.15)
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 14))
+        bg = ImageEnhance.Brightness(bg).enhance(0.50)
+        bg = ImageEnhance.Color(bg).enhance(1.0)
         canvas.paste(bg.convert("RGBA"), (0, 0))
 
-    vign = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    vd = ImageDraw.Draw(vign)
-    for y in range(H):
-        t = y / max(H - 1, 1)
-        a = int(100 * (0.2 + 0.8 * t))
-        vd.line([(0, y), (W, y)], fill=(6, 18, 40, a))
-    canvas = Image.alpha_composite(canvas, vign)
+    draw_edge_vignette(canvas, W, H)
+
+    draw_bokeh(canvas, W, H, hero, count=18, max_opacity=0.08)
 
     draw = ImageDraw.Draw(canvas)
     tp_id = entry.get("song_type_id", 0)
-    accent = hex_rgb(TYPE_COLOR.get(tp_id, "#6ba4f5"))
-    bar_outline = (*UI_BLUE_GLOW[:3], 195)
+    type_color = hex_rgb(TYPE_COLOR.get(tp_id, "#6ba4f5"))
 
-    # Corner brackets around content block
-    fx0 = L["vx"] - FRAME_PAD
-    fy0_outer = L["vy"] - FRAME_PAD
-    fx1_outer = L["vx"] + L["vw"] + FRAME_PAD
-    fy1_outer = L["bar_y"] + L["bar_h"]
-    _draw_corner_brackets(draw, (fx0, fy0_outer, fx1_outer, fy1_outer), (200, 215, 235, 85), 2, 22)
-    dsz = 3
-    for mx in (fx0 + 36, (fx0 + fx1_outer) // 2, fx1_outer - 36):
-        draw.polygon([(mx - dsz, fy0_outer), (mx + dsz, fy0_outer), (mx, fy0_outer + dsz + 2)], fill=(120, 180, 220, 70))
-
-    # Video frame
+    # ── Hero glow ─────────────────────────────────────────────────────────────
     vx, vy, vw, vh = L["vx"], L["vy"], L["vw"], L["vh"]
+    draw_glow(canvas, vx + vw // 2, vy + vh // 2, min(vw, vh) // 2, hero, opacity=0.12)
+    draw = ImageDraw.Draw(canvas)
+
+    # ── Video frame — hero-tinted border with inner glow ─────────────────────
     fx0v = vx - FRAME_PAD; fy0v = vy - FRAME_PAD
     fx1v = vx + vw + FRAME_PAD; fy1v = vy + vh + FRAME_PAD
-    draw.rounded_rectangle([fx0v, fy0v, fx1v, fy1v], radius=6, outline=bar_outline, width=2)
-    _draw_corner_brackets(draw, (fx0v, fy0v, fx1v, fy1v), (*bar_outline[:3], 130), 2, 18)
-    for i in range(0, vh, max(26, vh // 14)):
-        draw.ellipse([fx0v - 7, vy + i, fx0v - 3, vy + i + 3], fill=(*bar_outline[:3], 95))
+    # Outer glow ring
+    draw.rounded_rectangle([fx0v, fy0v, fx1v, fy1v], radius=6,
+                            outline=(*hero, int(255 * 0.35)), width=2)
 
     if has_video_window:
         canvas.paste(Image.new("RGBA", (vw, vh), (0, 0, 0, 0)), (vx, vy))
     else:
-        draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, accent, fonts)
+        draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, type_color, fonts)
 
     draw = ImageDraw.Draw(canvas)
 
-    # Progress bar
+    # ── Progress bar ──────────────────────────────────────────────────────────
     px, py, pww, ph = L["prog_x"], L["prog_y"], L["prog_w"], L["prog_h"]
-    draw.rounded_rectangle(
-        [px - 1, py - 1, px + pww + 1, py + ph + 1], radius=3,
-        fill=(18, 24, 38, 255), outline=(*bar_outline[:3], 80), width=1)
+    draw.rounded_rectangle([px, py, px + pww, py + ph], radius=2,
+                            fill=(30, 30, 46, 200))
+    draw.rounded_rectangle([px, py, px + pww, py + ph], radius=2,
+                            outline=(*hero, 60), width=1)
 
-    # ── Credits bar (party layout: song title + CAL only) ────────────────────
+    # ── Credits bar — glass panel ─────────────────────────────────────────────
     bx, by = L["bar_x0"], L["bar_y"]
     bx1, bh = L["bar_x1"], L["bar_h"]
+    draw_frosted_panel(canvas, (bx, by, bx1, by + bh), radius=PANEL_RADIUS)
+    draw = ImageDraw.Draw(canvas)
+    draw.line([(bx + PANEL_RADIUS, by), (bx1 - PANEL_RADIUS, by)],
+              fill=(*hero, int(255 * 0.75)), width=2)
+
     type_font = fonts["type_badge"]
     type_w = max(52, _text_width(type_font, "OTHER") + 14)
-    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, fill=(14, 17, 30, 245))
-    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, outline=bar_outline, width=2)
-    draw.line([(bx + type_w, by + 6), (bx + type_w, by + bh - 6)], fill=(*bar_outline[:3], 90), width=1)
-
+    draw.rounded_rectangle([bx + 6, by + 6, bx + type_w - 2, by + bh - 6],
+                            radius=6, fill=(*hero, 220))
     st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
-    tb = type_font.getbbox(st_abbr)
-    draw.text((bx + type_w // 2, by + bh // 2 - (tb[3] - tb[1]) // 2), st_abbr,
-              font=type_font, fill=(*accent[:3], 255), anchor="mm")
+    draw.text((bx + type_w // 2, by + bh // 2), st_abbr,
+              font=type_font, fill=(255, 255, 255, 255), anchor="mm")
 
     content_left = bx + type_w + 12
     content_right = bx1 - 12
@@ -594,14 +702,14 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     block_h = title_h + gap_title_cal + cal_h + gap_cal_game + game_h
     y_block_top = by + max(0, (bh - block_h) // 2)
 
-    draw.text((credits_cx - w_line1 // 2, y_block_top), line1, font=tf, fill=TITLE_WHITE)
+    draw.text((credits_cx - w_line1 // 2, y_block_top), line1, font=tf, fill=TEXT_PRIMARY)
     if cal_segs:
         y_cal = y_block_top + title_h + gap_title_cal
         draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
     if game_t:
         y_game = y_block_top + title_h + gap_title_cal + cal_h + gap_cal_game
         game_str = fit_text_width(game_font, game_t, credits_max_w)
-        draw_hcentered_line(draw, game_str, game_font, credits_cx, y_game, LABEL_GREY)
+        draw_hcentered_line(draw, game_str, game_font, credits_cx, y_game, TEXT_PRIMARY)
 
     # ── Right panel: rank + participant grid ─────────────────────────────────
     rx0, rx1 = L["rx0"], L["rx1"]
@@ -609,14 +717,21 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     pcx = (rx0 + rx1) // 2
     py0 = L["top_m"]
     panel_bottom = L["bar_y"] + L["bar_h"]
-    draw.rounded_rectangle([rx0 - 5, py0, rx1 + 5, panel_bottom], radius=10, fill=(10, 14, 28, 238))
-    _glow_line(draw, (rx0 - 5, py0 + 36), (rx0 - 5, panel_bottom), (*bar_outline[:3], 120), 2)
+    draw_glow(canvas, pcx, (py0 + panel_bottom) // 2, pw, hero, opacity=0.12)
+    draw = ImageDraw.Draw(canvas)
+    draw_frosted_panel(canvas, (rx0 - 4, py0, rx1 + 4, panel_bottom), radius=PANEL_RADIUS)
+    draw = ImageDraw.Draw(canvas)
+    draw.line([(rx0 - 4, py0 + PANEL_RADIUS), (rx0 - 4, panel_bottom - PANEL_RADIUS)],
+              fill=(*hero, int(255 * 0.75)), width=2)
 
-    # Rank number
+    # Rank number — pink accent
     rank = entry.get("rank", 0)
     rh = int(pw * 0.26)
-    draw.text((pcx, py0 + rh // 2), f"#{rank}", font=fonts["rank_big"],
-              fill=(235, 242, 255, 255), anchor="mm")
+    rank_str = f"#{rank}"
+    draw_glow(canvas, pcx, py0 + rh // 2, rh // 2, ACCENT_VIOLET[:3], opacity=0.12)
+    draw = ImageDraw.Draw(canvas)
+    draw.text((pcx, py0 + rh // 2), rank_str, font=fonts["rank_big"],
+              fill=ACCENT_VIOLET, anchor="mm")
 
     # ── Participant grid layout ───────────────────────────────────────────────
     n = len(participants_data)
@@ -626,24 +741,31 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     grid_w = pw - 4
 
     # Decide columns: try 2 cols first, fall back to 1 if avatars would be too small
-    MIN_AV = max(36, H // 22)   # minimum readable avatar diameter
+    MIN_AV = max(36, H // 22)
     for cols in (2, 1):
         rows = math.ceil(n / cols)
         cell_w = grid_w // cols
-        cell_h = grid_h // rows if rows > 0 else grid_h
-        # name font size: fit name within cell_w, at least MIN readable
         name_sz = max(10, min(H // 62, cell_w // 5))
         name_font, _ = find_font(LATIN_FONTS, name_sz)
         name_line_h = name_sz + 4
-        # avatar fills remaining cell height minus name row
-        av_d = min(cell_w - 4, cell_h - name_line_h - 4)
+        av_d = cell_w - 8   # avatar fills cell width
+        # Use 2 cols only if we have enough participants AND avatars stay readable
+        # Minimum: 5+ participants for 2 cols, or avatar would be too small
         if av_d >= MIN_AV or cols == 1:
             av_d = max(MIN_AV, av_d)
             break
 
-    # Score font: ~40% of avatar diameter, bold feel
-    score_sz = max(12, int(av_d * 0.38))
+    # Score font: bold and readable at a glance
+    score_sz = max(14, min(32, av_d // 4))
     score_font, _ = find_font(LATIN_FONTS, score_sz)
+
+    # Cell height = name + avatar + gap
+    cell_h = name_line_h + av_d + 8
+
+    # Grid starts at top, no vertical centering
+    grid_offset = 0
+
+    print(f"    Party grid: n={n} cols={cols} rows={rows} pw={pw} av_d={av_d} cell_h={cell_h} grid_h={grid_h} offset={grid_offset}")
 
     # Score extremes for coloring
     scored = [p["score"] for p in participants_data if p["score"] > 0]
@@ -655,12 +777,12 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
         row = idx_p // cols
         # cell center x
         cx_cell = rx0 + 2 + col * cell_w + cell_w // 2
-        # cell top y
-        cy_cell = grid_top + row * cell_h
+        # cell top y — offset to vertically center the grid
+        cy_cell = grid_top + grid_offset + row * cell_h
 
         # ── Name label — sized to fit within avatar width ─────────────────
+        # ── Name label — above avatar ─────────────────────────────────────
         name_str = p["name"]
-        # truncate until it fits within av_d
         while name_str and _text_width(name_font, name_str) > av_d:
             name_str = name_str[:-1]
         if name_str != p["name"]:
@@ -677,38 +799,45 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
         if avatar_img:
             canvas.alpha_composite(avatar_img, (av_cx - av_d // 2, av_cy - av_d // 2))
         else:
-            # Placeholder filled circle
             draw.ellipse([av_cx - av_d // 2, av_cy - av_d // 2,
                           av_cx + av_d // 2, av_cy + av_d // 2],
                          fill=(20, 26, 44, 255))
             draw.text((av_cx, av_cy), "?", font=name_font,
                       fill=(100, 110, 140, 200), anchor="mm")
 
-        # ── Score — large text overlapping bottom of avatar ───────────────
+        # ── Score — large bold number overlapping bottom of avatar ──────────
         sc = p["score"]
         sc_str = str(int(sc)) if sc == int(sc) and sc > 0 else (str(sc) if sc > 0 else "–")
         if sc > 0 and sc == max_sc and sc != min_sc:
-            sc_color = (80, 220, 120, 255)
+            sc_color = (*ACCENT_PINK[:3], 255)
         elif sc > 0 and sc == min_sc and sc != max_sc:
-            sc_color = (240, 80, 80, 255)
+            sc_color = (*ACCENT_VIOLET[:3], 255)
         else:
             sc_color = (255, 255, 255, 240)
 
-        # Score sits at the bottom edge of the avatar, overlapping inward
         sc_y = av_cy + av_d // 2 - score_sz // 2 - 2
-        sc_x = av_cx
-        # Dark shadow for readability
         for ox, oy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, 2), (0, -2)):
-            draw.text((sc_x + ox, sc_y + oy), sc_str, font=score_font,
-                      fill=(0, 0, 0, 180), anchor="mm")
-        draw.text((sc_x, sc_y), sc_str, font=score_font, fill=sc_color, anchor="mm")
+            draw.text((av_cx + ox, sc_y + oy), sc_str, font=score_font,
+                      fill=(0, 0, 0, 200), anchor="mm")
+        draw.text((av_cx, sc_y), sc_str, font=score_font, fill=sc_color, anchor="mm")
 
-    # Average score at bottom of panel
+    # Average score at bottom of panel — more prominent
     avg = entry.get("party_avg_score", 0)
     if avg:
-        avg_font, _ = find_font(LATIN_FONTS, max(13, H // 64))
-        draw.text((pcx, panel_bottom - 14), f"avg  {avg:.1f}", font=avg_font,
-                  fill=(200, 210, 230, 190), anchor="mm")
+        avg_font, _ = find_font(LATIN_FONTS, max(15, H // 54))
+        avg_str = f"avg  {avg:.1f}"
+        aw = _text_width(avg_font, avg_str)
+        pad_x, pad_y = 10, 4
+        ax0 = pcx - aw // 2 - pad_x
+        ay0 = panel_bottom - 26
+        ax1 = pcx + aw // 2 + pad_x
+        ay1 = panel_bottom - 6
+        draw.rounded_rectangle([ax0, ay0, ax1, ay1], radius=6,
+                                fill=(*hero, 30))
+        draw.rounded_rectangle([ax0, ay0, ax1, ay1], radius=6,
+                                outline=(*hero, 80), width=1)
+        draw.text((pcx, (ay0 + ay1) // 2), avg_str, font=avg_font,
+                  fill=(*hero, 230), anchor="mm")
 
     canvas.save(out_path, "PNG")
 
@@ -720,93 +849,72 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    base_bg = (8, 11, 22, 255)
-    draw.rectangle([0, 0, W, H], fill=base_bg)
+    # ── Background: #121212 base + blurred cover art ──────────────────────────
+    draw.rectangle([0, 0, W, H], fill=BG_BASE)
+    hero = sample_dominant_color(cover_img)
 
     if cover_img:
         sc = max(W / cover_img.width, H / cover_img.height) * 1.06
         bw, bh = int(cover_img.width * sc), int(cover_img.height * sc)
         bg = cover_img.resize((bw, bh), Image.LANCZOS)
         bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 48))
-        bg = ImageEnhance.Brightness(bg).enhance(0.12)
-        bg = ImageEnhance.Color(bg).enhance(1.15)
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 14))
+        bg = ImageEnhance.Brightness(bg).enhance(0.50)
+        bg = ImageEnhance.Color(bg).enhance(1.0)
         canvas.paste(bg.convert("RGBA"), (0, 0))
 
-    vign = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    vd = ImageDraw.Draw(vign)
-    for y in range(H):
-        t = y / max(H - 1, 1)
-        a = int(100 * (0.2 + 0.8 * t))
-        vd.line([(0, y), (W, y)], fill=(6, 18, 40, a))
-    canvas = Image.alpha_composite(canvas, vign)
+    # Vignette
+    draw_edge_vignette(canvas, W, H)
+
+    # Bokeh atmosphere
+    draw_bokeh(canvas, W, H, hero, count=18, max_opacity=0.08)
 
     draw = ImageDraw.Draw(canvas)
     tp_id = entry.get("song_type_id", 0)
-    accent = hex_rgb(TYPE_COLOR.get(tp_id, "#6ba4f5"))
-    bar_outline = (*UI_BLUE_GLOW[:3], 195)
+    type_color = hex_rgb(TYPE_COLOR.get(tp_id, "#6ba4f5"))
 
-    inset = max(6, L["margin"] // 2)
-    # Corner brackets frame the content: video top-left to credits bar bottom-right
-    fx0 = L["vx"] - FRAME_PAD
-    fy0_outer = L["vy"] - FRAME_PAD
-    fx1_outer = L["vx"] + L["vw"] + FRAME_PAD
-    fy1_outer = L["bar_y"] + L["bar_h"]
-    _draw_corner_brackets(draw, (fx0, fy0_outer, fx1_outer, fy1_outer), (200, 215, 235, 85), 2, 22)
-    # Small tick marks along the top edge
-    dsz = 3
-    for mx in (fx0 + 36, (fx0 + fx1_outer) // 2, fx1_outer - 36):
-        draw.polygon(
-            [(mx - dsz, fy0_outer), (mx + dsz, fy0_outer), (mx, fy0_outer + dsz + 2)],
-            fill=(120, 180, 220, 70),
-        )
-
+    # ── Hero glow behind panels ───────────────────────────────────────────────
     vx, vy, vw, vh = L["vx"], L["vy"], L["vw"], L["vh"]
-    fx0 = vx - FRAME_PAD
-    fy0 = vy - FRAME_PAD
-    fx1 = vx + vw + FRAME_PAD
-    fy1 = vy + vh + FRAME_PAD
-    draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=6, outline=bar_outline, width=2)
-    _draw_corner_brackets(draw, (fx0, fy0, fx1, fy1), (*bar_outline[:3], 130), 2, 18)
-    for i in range(0, vh, max(26, vh // 14)):
-        draw.ellipse([fx0 - 7, vy + i, fx0 - 3, vy + i + 3], fill=(*bar_outline[:3], 95))
+    draw_glow(canvas, vx + vw // 2, vy + vh // 2, min(vw, vh) // 2, hero, opacity=0.12)
+    draw = ImageDraw.Draw(canvas)
+
+    # ── Video frame — hero-tinted border with glow ───────────────────────────
+    fx0 = vx - FRAME_PAD; fy0 = vy - FRAME_PAD
+    fx1 = vx + vw + FRAME_PAD; fy1 = vy + vh + FRAME_PAD
+    draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=6,
+                            outline=(*hero, int(255 * 0.35)), width=2)
 
     if has_video_window:
-        hole = Image.new("RGBA", (vw, vh), (0, 0, 0, 0))
-        canvas.paste(hole, (vx, vy))
+        canvas.paste(Image.new("RGBA", (vw, vh), (0, 0, 0, 0)), (vx, vy))
     else:
-        draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, accent, fonts)
+        draw_sound_panel(canvas, vx, vy, vw, vh, cover_img, type_color, fonts)
 
     draw = ImageDraw.Draw(canvas)
 
+    # ── Progress bar ──────────────────────────────────────────────────────────
     px, py, pww, ph = L["prog_x"], L["prog_y"], L["prog_w"], L["prog_h"]
-    track_pad = 1
-    draw.rounded_rectangle(
-        [px - track_pad, py - track_pad, px + pww + track_pad, py + ph + track_pad],
-        radius=3,
-        fill=(18, 24, 38, 255),
-        outline=(*bar_outline[:3], 80),
-        width=1,
-    )
+    draw.rounded_rectangle([px, py, px + pww, py + ph], radius=2,
+                            fill=(30, 30, 46, 200))
+    draw.rounded_rectangle([px, py, px + pww, py + ph], radius=2,
+                            outline=(*hero, 60), width=1)
 
-    bx, by, bw, bh = L["bar_x0"], L["bar_y"], L["bar_w"], L["bar_h"]
-    bx1 = L["bar_x1"]
+    # ── Credits bar — glass panel ─────────────────────────────────────────────
+    bx, by = L["bar_x0"], L["bar_y"]
+    bx1, bh = L["bar_x1"], L["bar_h"]
+    draw_frosted_panel(canvas, (bx, by, bx1, by + bh), radius=PANEL_RADIUS)
+    draw = ImageDraw.Draw(canvas)
+    # Hero-tinted top edge highlight
+    draw.line([(bx + PANEL_RADIUS, by), (bx1 - PANEL_RADIUS, by)],
+              fill=(*hero, int(255 * 0.75)), width=2)
+
+    # Type badge (OP/ED/etc) — violet accent pill
     type_font = fonts["type_badge"]
     type_w = max(52, _text_width(type_font, "OTHER") + 14)
-    bar_fill = (14, 17, 30, 245)
-    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, fill=bar_fill)
-    draw.rounded_rectangle([bx, by, bx1, by + bh], radius=8, outline=bar_outline, width=2)
-    draw.line([(bx + type_w, by + 6), (bx + type_w, by + bh - 6)], fill=(*bar_outline[:3], 90), width=1)
-
+    draw.rounded_rectangle([bx + 6, by + 6, bx + type_w - 2, by + bh - 6],
+                            radius=6, fill=(*hero, 220))
     st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
-    tb = type_font.getbbox(st_abbr)
-    draw.text(
-        (bx + type_w // 2, by + bh // 2 - (tb[3] - tb[1]) // 2),
-        st_abbr,
-        font=type_font,
-        fill=(*accent[:3], 255),
-        anchor="mm",
-    )
+    draw.text((bx + type_w // 2, by + bh // 2), st_abbr,
+              font=type_font, fill=(255, 255, 255, 255), anchor="mm")
 
     content_left = bx + type_w + 12
     content_right = bx1 - 12
@@ -819,11 +927,7 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     line1_core = f"{song_t} / {voc}" if voc else song_t
     fs = max(20, min(40, int(1200 / max(len(line1_core), 12))))
     try:
-        tf = (
-            ImageFont.truetype(fonts["lat_path"], fs)
-            if fonts.get("lat_path")
-            else fonts["bar_title"]
-        )
+        tf = ImageFont.truetype(fonts["lat_path"], fs) if fonts.get("lat_path") else fonts["bar_title"]
     except Exception:
         tf = fonts["bar_title"]
     line1 = fit_text_width(tf, line1_core, credits_max_w)
@@ -834,113 +938,109 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     cal_segs = build_cal_segments(artists)
     w_line1 = _text_width(tf, line1)
     w_cal = segments_width(cal_font, cal_segs) if cal_segs else 0
-    gap_title_cal = max(12, int(title_h * 0.42)) if cal_segs else 0
+    gap_title_cal = max(10, int(title_h * 0.38)) if cal_segs else 0
     try:
         cal_bb = cal_font.getbbox("Ag")
         cal_h = (cal_bb[3] - cal_bb[1] + 3) if cal_segs else 0
     except Exception:
-        cal_h = 22 if cal_segs else 0
+        cal_h = 20 if cal_segs else 0
+
+    # Credits bar: song title + CAL only — VN title is shown in the sidebar
     block_h = title_h + gap_title_cal + cal_h
     y_block_top = by + max(0, (bh - block_h) // 2)
 
-    x1 = credits_cx - w_line1 // 2
-    draw.text((x1, y_block_top), line1, font=tf, fill=TITLE_WHITE)
+    draw.text((credits_cx - w_line1 // 2, y_block_top), line1, font=tf, fill=TEXT_PRIMARY)
     if cal_segs:
-        x_cal = credits_cx - w_cal // 2
         y_cal = y_block_top + title_h + gap_title_cal
-        draw_text_segments(draw, x_cal, y_cal, cal_segs, cal_font)
+        draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
 
+    # ── Right sidebar — glass panel ───────────────────────────────────────────
     rx0, rx1 = L["rx0"], L["rx1"]
     pw = rx1 - rx0
     pcx = (rx0 + rx1) // 2
     py0 = L["top_m"]
     panel_bottom = L["bar_y"] + L["bar_h"]
-    draw.rounded_rectangle(
-        [rx0 - 5, py0, rx1 + 5, panel_bottom],
-        radius=10,
-        fill=(10, 14, 28, 238),
-    )
-    _glow_line(draw, (rx0 - 5, py0 + 36), (rx0 - 5, panel_bottom), (*bar_outline[:3], 120), 2)
 
+    # Glow behind sidebar
+    draw_glow(canvas, pcx, (py0 + panel_bottom) // 2, pw, hero, opacity=0.12)
+    draw = ImageDraw.Draw(canvas)
+    draw_frosted_panel(canvas, (rx0 - 4, py0, rx1 + 4, panel_bottom), radius=PANEL_RADIUS)
+    draw = ImageDraw.Draw(canvas)
+    # Hero-tinted left edge
+    draw.line([(rx0 - 4, py0 + PANEL_RADIUS), (rx0 - 4, panel_bottom - PANEL_RADIUS)],
+              fill=(*hero, int(255 * 0.75)), width=2)
+
+    # Rank number — pink accent with subtle glow
     rank = entry.get("rank", 0)
-    rh = int(pw * 0.26)
-    ry1 = py0 + rh
-    rtxt = f"#{rank}"
-    draw.text(
-        (pcx, py0 + rh // 2),
-        rtxt,
-        font=fonts["rank_big"],
-        fill=(235, 242, 255, 255),
-        anchor="mm",
-    )
+    rh = int(pw * 0.30)
+    rank_str = f"#{rank}"
+    # Soft glow behind rank text
+    draw_glow(canvas, pcx, py0 + rh // 2, rh // 2, ACCENT_VIOLET[:3], opacity=0.12)
+    draw = ImageDraw.Draw(canvas)
+    draw.text((pcx, py0 + rh // 2), rank_str, font=fonts["rank_big"],
+              fill=ACCENT_VIOLET, anchor="mm")
 
-    cov_top = ry1 + 12
-    cov_max_h = int((H - L["margin"] - cov_top) * 0.48)
-    cov_w, cov_h = pw - 10, cov_max_h
+    # Separator line
+    sep_y = py0 + rh
+    draw.line([(rx0, sep_y), (rx1, sep_y)], fill=PANEL_BORDER, width=1)
+
+    # Cover art
+    cov_top = sep_y + 10
+    cov_max_h = int((panel_bottom - cov_top) * 0.46)
+    cov_w, cov_h = pw - 8, cov_max_h
     cx0 = pcx - cov_w // 2
     if cover_img:
         sc2 = min(cov_w / cover_img.width, cov_h / cover_img.height)
         dw, dh = int(cover_img.width * sc2), int(cover_img.height * sc2)
         fit = cover_img.resize((dw, dh), Image.LANCZOS).convert("RGBA")
         panel = Image.new("RGBA", (cov_w, cov_h), (0, 0, 0, 0))
-        ox, oy = (cov_w - dw) // 2, (cov_h - dh) // 2
-        panel.paste(fit, (ox, oy))
-        border = Image.new("RGBA", (cov_w, cov_h), (0, 0, 0, 0))
-        bd = ImageDraw.Draw(border)
-        bd.rounded_rectangle([0, 0, cov_w - 1, cov_h - 1], radius=6, outline=(*bar_outline[:3], 200), width=2)
-        panel = Image.alpha_composite(panel, border)
+        panel.paste(fit, ((cov_w - dw) // 2, (cov_h - dh) // 2))
+        # Soft hero-tinted border on cover
+        bd = ImageDraw.Draw(panel)
+        bd.rounded_rectangle([0, 0, cov_w - 1, cov_h - 1], radius=8,
+                              outline=(*hero, int(255 * 0.75)), width=2)
         canvas.alpha_composite(panel, (cx0, cov_top))
     else:
-        draw.rounded_rectangle(
-            [cx0, cov_top, cx0 + cov_w, cov_top + cov_h],
-            radius=6,
-            outline=(*bar_outline[:3], 100),
-            width=1,
-        )
-        draw.text(
-            (cx0 + cov_w // 2, cov_top + cov_h // 2),
-            "No cover",
-            font=fonts["badge"],
-            fill=(120, 130, 160, 255),
-            anchor="mm",
-        )
+        draw_frosted_panel(canvas, (cx0, cov_top, cx0 + cov_w, cov_top + cov_h), radius=8)
+        draw = ImageDraw.Draw(canvas)
+        draw.text((cx0 + cov_w // 2, cov_top + cov_h // 2), "No cover",
+                  font=fonts["badge"], fill=TEXT_SECONDARY, anchor="mm")
 
     draw = ImageDraw.Draw(canvas)
-    meta_y = cov_top + cov_h + 14
+    meta_y = cov_top + cov_h + 12
     vn_ro = (entry.get("vn_romaji") or entry.get("game") or "").strip()
     vn_jp = (entry.get("vn_title_jp") or entry.get("game_jp") or "").strip()
     meta_max_w = max(40, pw - 8)
+    lbl_font = fonts["badge"]
+    lbl_gap = 16
 
-    draw_hcentered_line(draw, "<<TITLE>>", fonts["badge"], pcx, meta_y, LABEL_GREY)
-    meta_y += 18
+    # <<TITLE>>
+    draw_hcentered_line(draw, "<<TITLE>>", lbl_font, pcx, meta_y, TEXT_SECONDARY)
+    meta_y += lbl_gap
     if vn_ro:
-        meta_y += wrap_text_centered(
-            draw, vn_ro, fonts["game"], pcx, meta_y, meta_max_w, 28, TITLE_WHITE, max_lines=2
-        )
-        meta_y += 6
+        meta_y += wrap_text_centered(draw, vn_ro, fonts["game"], pcx, meta_y,
+                                     meta_max_w, 24, TEXT_PRIMARY, max_lines=2)
+        meta_y += 3
     if vn_jp and vn_jp != vn_ro:
-        jf = fonts["jp"]
-        meta_y += wrap_text_centered(
-            draw, vn_jp, jf, pcx, meta_y, meta_max_w, 26, (210, 218, 235, 255), max_lines=3
-        )
-        meta_y += 8
+        meta_y += wrap_text_centered(draw, vn_jp, fonts["jp"], pcx, meta_y,
+                                     meta_max_w, 22, TEXT_PRIMARY, max_lines=3)
+    meta_y += 10
 
-    meta_y += 10
-    draw_hcentered_line(draw, "<<DEVELOPER>>", fonts["badge"], pcx, meta_y, LABEL_GREY)
-    meta_y += 18
+    # <<DEVELOPER>>
     dev = (entry.get("vn_developers") or "").strip()
+    draw_hcentered_line(draw, "<<DEVELOPER>>", lbl_font, pcx, meta_y, TEXT_SECONDARY)
+    meta_y += lbl_gap
     if dev:
-        meta_y += wrap_text_centered(
-            draw, dev, fonts["role_nm"], pcx, meta_y, meta_max_w, 22, (220, 226, 240, 255), max_lines=3
-        )
-    else:
-        meta_y += 16
+        meta_y += wrap_text_centered(draw, dev, fonts["role_nm"], pcx, meta_y,
+                                     meta_max_w, 20, TEXT_PRIMARY, max_lines=2)
     meta_y += 10
-    draw_hcentered_line(draw, "<<RELEASE DATE>>", fonts["badge"], pcx, meta_y, LABEL_GREY)
-    meta_y += 18
+
+    # <<RELEASE DATE>>
     rel = (entry.get("vn_released") or "").strip()
+    draw_hcentered_line(draw, "<<RELEASE DATE>>", lbl_font, pcx, meta_y, TEXT_SECONDARY)
+    meta_y += lbl_gap
     if rel:
-        draw_hcentered_line(draw, rel, fonts["role_nm"], pcx, meta_y, (220, 226, 240, 255))
+        draw_hcentered_line(draw, rel, fonts["role_nm"], pcx, meta_y, TEXT_PRIMARY)
 
     canvas.save(out_path, "PNG")
 
@@ -1637,13 +1737,15 @@ def main():
     with open(pl_path, encoding="utf-8") as f:
         pl = json.load(f)
 
-    # Party scores merge
+    # Party scores merge — always force re-render since overlay changes per song
     if args.scores:
         for sf in args.scores:
             if not Path(sf).exists():
                 sys.exit(f"ERROR: Scores file not found: {sf}")
         print(f"\n  Party mode: merging {len(args.scores)} score file(s)…")
         pl = merge_party_scores(args.playlist, args.scores)
+        skip_existing = False   # always re-render party clips
+        print("  Party mode: clip cache disabled (overlays are per-song)")
 
     entries = pl.get("entries", [])
     if not entries:
@@ -1731,7 +1833,9 @@ def main():
         clip_path = str(clips_dir / f"{rank:04d}.mp4")
         
         # Check if clip exists and we should skip it (default behavior)
-        if skip_existing and os.path.isfile(clip_path) and os.path.getsize(clip_path) > 4096:
+        # Party renders are never skipped — scores/avatars may have changed
+        is_party_clip = bool(entry.get("party_participants_data"))
+        if skip_existing and not is_party_clip and os.path.isfile(clip_path) and os.path.getsize(clip_path) > 4096:
             print("    ✓ clip exists, skipping (use --force-render to re-render)")
             clip_paths.append(clip_path)
             durations.append(float(entry.get("duration", 30)))

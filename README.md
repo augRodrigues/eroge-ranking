@@ -20,7 +20,7 @@ python build_db.py              # auto-download
 python build_db.py dump.txt     # use local dump
 ```
 
-2. **Ranking** — Open `index.html`, search for songs, drag to reorder, set clip length and start time per entry. Attaching a local media file is optional — the renderer can download files automatically from erogemusicquiz.com using session cookies.
+2. **Ranking** — Open `index.html`, search for songs, drag to reorder, set clip length and start time per entry. Attaching a local media file is optional — the renderer downloads files automatically from erogemusicquiz.com using session cookies.
 
 3. **Export** — Click **Export playlist**. The app fetches VN cover, romanized/Japanese title, developers, and release date from the VNDB API, then downloads `playlist.json`.
 
@@ -32,7 +32,16 @@ python render_video.py playlist.json
 python render_video.py playlist.json --out my_ranking.mp4 --crf 18 --preset slow
 ```
 
-Downloaded media is cached in a `media/` folder and never deleted. Re-runs skip already-rendered clips unless `--force-render` is passed.
+Downloaded media is cached in `media/` and never deleted. Re-runs skip already-rendered clips unless `--force-render` is passed.
+
+## Video Overlay
+
+The rendered overlay uses a glassmorphism aesthetic:
+- `#121212` dark base with blurred cover art background
+- Frosted glass panels (credits bar + sidebar) with hero-color dynamic tinting
+- Hero color is sampled from each clip's cover art; falls back to violet `#8B5CF6` for dark/grey art
+- Sidebar shows rank number, VN cover art, `<<TITLE>>` / `<<DEVELOPER>>` / `<<RELEASE DATE>>`
+- Credits bar shows song title, vocalist, and C/A/L composer credits
 
 ## Party Rank
 
@@ -40,11 +49,11 @@ Multiple people can score the same song list and the host renders a combined ran
 
 **Host:**
 1. Build the song list in `index.html` as usual.
-2. Click **★ Party** → **Export template**. This runs the normal VNDB fetch and downloads a single `party_template.json` — share this file with participants. No separate `playlist.json` needed.
+2. Click **★ Party** → **Export template**. Downloads a single `party_template.json` — share with participants.
 
 **Each participant:**
-1. Load `party_template.json` via **Load ranking** — the app detects it, asks for your name and a profile picture.
-2. Score each song 1–10 using the star rating. Use the **Play** button on each card to listen via EMQ.
+1. Load `party_template.json` via **Load ranking** — enter your name and pick a profile picture.
+2. Score each song 1–10 using the star rating. Use **Play** to listen via EMQ.
 3. Click **↓ Export scores** → send `scores_Name.json` to the host.
 
 **Host renders:**
@@ -52,7 +61,7 @@ Multiple people can score the same song list and the host renders a combined ran
 python render_video.py party_template.json --scores alice.json bob.json charlie.json
 ```
 
-Scores are averaged across participants. The video plays worst (#N) to best (#1). The right panel shows each participant's round profile picture with their score overlaid, and the average score at the bottom.
+Scores are averaged. Video plays worst (#N) to best (#1). Right panel shows participant avatars with scores and the average per song.
 
 ## `render_video.py` options
 
