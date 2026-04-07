@@ -667,7 +667,7 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
             name_str = name_str[:-1] + "…"
         nw = _text_width(name_font, name_str)
         draw.text((cx_cell - nw // 2, cy_cell + 2), name_str,
-                  font=name_font, fill=(200, 210, 230, 220))
+                  font=name_font, fill=(255, 255, 255, 255))
 
         # ── Avatar circle ─────────────────────────────────────────────────
         av_cx = cx_cell
