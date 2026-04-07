@@ -1337,6 +1337,7 @@ def make_clip_composite(
     prog_w,
     prog_h,
     media_has_audio=True,
+    hero_rgb=None,
 ):
     px, py, pw, ph = int(prog_x), int(prog_y), int(prog_w), max(2, int(prog_h))
     td = float(dur)
@@ -1364,8 +1365,14 @@ def make_clip_composite(
             f"[bg][ov]overlay=0:0:format=auto[v1]"
         )
 
+    # Progress bar color: use hero color if available, else default cyan
+    if hero_rgb:
+        pb_hex = "0x{:02x}{:02x}{:02x}".format(*hero_rgb)
+    else:
+        pb_hex = "0x8b5cf6"  # violet fallback
+
     fc += (
-        f";color=c=0x4db8e8@0.92:s={pw}x{ph}:d={td}:r={fps},format=rgba[emq_pb0];"
+        f";color=c={pb_hex}@0.92:s={pw}x{ph}:d={td}:r={fps},format=rgba[emq_pb0];"
         f"[emq_pb0]scale=w={w_expr}:h={ph}:flags=fast_bilinear:eval=frame[emq_pb1];"
         f"[v1][emq_pb1]overlay=x={px}:y={py}:format=auto[vout]"
     )
@@ -1437,16 +1444,18 @@ def make_clip_composite(
 
 
 def make_silent_clip_composite(
-    overlay_path, clip_path, dur, fps, crf, preset, verbose, W, H, prog_x, prog_y, prog_w, prog_h
+    overlay_path, clip_path, dur, fps, crf, preset, verbose, W, H, prog_x, prog_y, prog_w, prog_h,
+    hero_rgb=None,
 ):
     px, py, pw, ph = int(prog_x), int(prog_y), int(prog_w), max(2, int(prog_h))
     td = float(dur)
     w_expr = f"{pw}-{pw}*t/{td}"
+    pb_hex = "0x{:02x}{:02x}{:02x}".format(*hero_rgb) if hero_rgb else "0x8b5cf6"
     fc = (
         f"color=c=0x0a0d12:s={W}x{H}:d={td}:r={fps},format=rgba[bg];"
         f"[1:v]format=rgba[ov];"
         f"[bg][ov]overlay=0:0:format=auto[v1];"
-        f"color=c=0x4db8e8@0.92:s={pw}x{ph}:d={td}:r={fps},format=rgba[emq_pb0];"
+        f"color=c={pb_hex}@0.92:s={pw}x{ph}:d={td}:r={fps},format=rgba[emq_pb0];"
         f"[emq_pb0]scale=w={w_expr}:h={ph}:flags=fast_bilinear:eval=frame[emq_pb1];"
         f"[v1][emq_pb1]overlay=x={px}:y={py}:format=auto[vout]"
     )
@@ -1872,6 +1881,7 @@ def main():
         overlay_path = str(frames / f"{rank:04d}.png")
         is_video = media_path and media_kind(media_path) == "video"
         party_pd = entry.get("party_participants_data") or None
+        hero_rgb = sample_dominant_color(cover_img)
 
         def render_ov(hole, _pd=party_pd):
             render_overlay(entry, cover_img, fonts, W, H, overlay_path,
@@ -1915,6 +1925,7 @@ def main():
                 L["prog_w"],
                 L["prog_h"],
                 media_has_audio=has_aud,
+                hero_rgb=hero_rgb,
             )
             if not ok and is_video:
                 print("    ⚠ Retrying as audio-only (no video decode)…")
@@ -1964,6 +1975,7 @@ def main():
                 L["prog_y"],
                 L["prog_w"],
                 L["prog_h"],
+                hero_rgb=hero_rgb,
             )
 
         if ok:
