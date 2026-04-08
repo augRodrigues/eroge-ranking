@@ -428,6 +428,7 @@ const TC={1:'#e8c547',2:'#3ecfac',3:'#6ba4f5',4:'#a48ef8',0:'#7a7a98'};
 const RL={1:'Vocals',2:'Music',3:'Performer',4:'Director',5:'Arrangement',6:'Lyrics'};
 const RO=[1,6,2,5,3,4];
 let songs=[],idx=null,keys=[];
+let tokenIndex = new Map(); // Map<token string, Set<string> song ids>
 let ranking=[];
 let pjson=null;
 let partyMode=false,partyName='',partyAvatar='';
@@ -444,12 +445,27 @@ function y(){return new Promise(r=>setTimeout(r,0));}
 // DB
 async function loadDB(json){
   const d=typeof json==='string'?JSON.parse(json):json;
-  songs=d.songs||[];idx=new Map();keys=[];
-  for(const s of songs){
-    idx.set(String(s.id),s);
-    keys.push({id:s.id,k:((s.t||'')+' '+(s.tj||'')+' '+(s.gt||'')+' '+(s.ar||[]).map(a=>a.n).join(' ')).toLowerCase()});
-  }
+  songs=d.songs||[];idx=new Map();keys=[];tokenIndex=new Map();
   $('hinfo').textContent=songs.length.toLocaleString()+' songs · '+(d.built?.slice(0,10)||'');
+  
+  const CHUNK=5000;
+  for(let i=0;i<songs.length;i+=CHUNK){
+    const chunk = songs.slice(i, i+CHUNK);
+    for(const s of chunk){
+      idx.set(String(s.id),s);
+      const text = ((s.t||'')+' '+(s.tj||'')+' '+(s.gt||'')+' '+(s.ar||[]).map(a=>a.n).join(' ')).toLowerCase();
+      keys.push({id:s.id,k:text});
+      
+      const words = new Set(text.split(/[^a-z0-9\u3040-\u30ff\u4e00-\u9fff]+/));
+      for(const w of words){
+        if(w.length<2) continue;
+        const pfx = w.slice(0,2);
+        if(!tokenIndex.has(pfx)) tokenIndex.set(pfx, new Set());
+        tokenIndex.get(pfx).add(s.id);
+      }
+    }
+    await y();
+  }
 }
 async function fetchDB(cb){
   try{
@@ -473,8 +489,32 @@ function show(){$('load').style.display='none';$('app').classList.add('show','fa
 // Search
 function search(q,lim=28){
   if(!q.trim())return[];
-  const ts=q.toLowerCase().trim().split(/\s+/);const out=[];
-  for(const e of keys){if(ts.every(t=>e.k.includes(t))){out.push(idx.get(String(e.id)));if(out.length>=lim)break;}}
+  const ts=q.toLowerCase().trim().split(/\s+/);
+  
+  let cands=null;
+  for(const t of ts){
+    if(t.length>=2){
+      const pfx=t.slice(0,2);
+      const ids=tokenIndex.get(pfx);
+      if(!ids) return []; 
+      if(!cands) cands=new Set(ids);
+      else{
+        const int=new Set();
+        for(const id of cands) if(ids.has(id)) int.add(id);
+        cands=int;
+      }
+      if(cands.size===0) break;
+    }
+  }
+  
+  const out=[];
+  for(const e of keys){
+    if(cands && !cands.has(e.id)) continue;
+    if(ts.every(t=>e.k.includes(t))){
+      out.push(idx.get(String(e.id)));
+      if(out.length>=lim) break;
+    }
+  }
   return out;
 }
 let fi=-1;
@@ -701,19 +741,46 @@ async function doExport(){
   });
 
   const entries=[];
+  let head=0, active=0;
+  await new Promise(resolve => {
+    const run = async () => {
+      if(head >= ordered.length){
+        if(active === 0) resolve();
+        return;
+      }
+      const i = head++;
+      active++;
+      
+      const {s, dur, st, lp} = ordered[i];
+      const origRank=ranking.indexOf(ordered[i])+1;
+      
+      $('xbar').style.width=(head/ordered.length*100).toFixed(1)+'%';
+      $('xpst').textContent='Resolving VNDB… '+head+'/'+ordered.length;
+      
+      let vn = null;
+      if(s.vid){
+        ses[i].textContent='⌛';
+        vn=await resolveVN(s.vid);
+        const ok=vn&&(vn.cover_url||vn.vn_romaji);
+        ses[i].textContent=ok?'✓':'–';
+        ses[i].style.color=ok?'var(--grn)':'var(--mu)';
+      } else {
+        ses[i].textContent='–';
+        ses[i].style.color='var(--mu2)';
+      }
+      
+      ordered[i].vnCache = vn;
+      active--;
+      run();
+    };
+    
+    for(let k=0; k<6 && k<ordered.length; k++) run();
+  });
+  
   for(let i=0;i<ordered.length;i++){
-    const{s,dur,st,lp}=ordered[i];
+    const {s, dur, st, lp} = ordered[i];
     const origRank=ranking.indexOf(ordered[i])+1;
-    $('xbar').style.width=((i+1)/ordered.length*100).toFixed(1)+'%';
-    $('xpst').textContent='Resolving VNDB… '+(i+1)+'/'+ordered.length;
-    let vn=null;
-    if(s.vid){
-      ses[i].textContent='⌛';
-      vn=await resolveVN(s.vid);
-      const ok=vn&&(vn.cover_url||vn.vn_romaji);
-      ses[i].textContent=ok?'✓':'–';
-      ses[i].style.color=ok?'var(--grn)':'var(--mu)';
-    }else{ses[i].textContent='–';ses[i].style.color='var(--mu2)';}
+    const vn = ordered[i].vnCache;
     const artists=(s.ar||[]).map(a=>({name:a.n,name_jp:a.nj||'',role_id:a.r,role:RL[a.r]||('Role '+a.r)}));
     entries.push({
       rank:origRank,video_rank:i+1,
@@ -728,8 +795,6 @@ async function doExport(){
       duration:dur,start_time:st,
       artists,
     });
-    if(s.vid)await new Promise(r=>setTimeout(r,35));
-    await y();
   }
 
   const aspect=$('xaspect').value==='stretch'?'stretch':'letterbox';

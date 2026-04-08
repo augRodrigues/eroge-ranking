@@ -122,17 +122,17 @@ def load_fonts(args, W, H):
         return f
 
     return dict(
-        title=lf(max(32, min(64, H // 16))),
-        jp=jf(max(18, H // 46)),
-        badge=lf(max(12, H // 72)),
-        game=lf(max(15, H // 56)),
-        role_lbl=lf(max(11, H // 84)),
-        role_nm=lf(max(13, H // 72)),
-        rank_big=lf(max(40, H // 24)),
-        bar_title=lf(max(24, H // 22)),
-        bar_cal=lf(max(15, H // 62)),
-        sound=lf(max(34, H // 15)),
-        type_badge=lf(max(20, H // 38)),
+        title=lf(max(32, min(72, int(H / 14)))),
+        jp=jf(max(18, int(H / 36))),
+        badge=lf(max(12, int(H / 64))),
+        game=lf(max(15, int(H / 46))),
+        role_lbl=lf(max(11, int(H / 72))),
+        role_nm=lf(max(13, int(H / 64))),
+        rank_big=lf(max(40, int(H / 20))),
+        bar_title=lf(max(24, int(H / 20))),
+        bar_cal=lf(max(15, int(H / 54))),
+        sound=lf(max(34, int(H / 14))),
+        type_badge=lf(max(20, int(H / 34))),
         lat_path=lat_path,
         jp_path=jp_path,
     )
@@ -195,20 +195,23 @@ def wrap_text_centered(draw, text, font, cx, y, max_w, line_h, fill, max_lines=3
 def wrap_text(draw, text, font, x, y, max_w, line_h, fill, max_lines=3):
     if not text:
         return 0
-    words = text.split(" ")
-    line, lines = "", []
-    for w in words:
-        test = (line + " " + w).strip()
-        bb = font.getbbox(test)
-        if bb[2] - bb[0] > max_w and line:
+    if any(_is_cjk(c) for c in text):
+        lines = _wrap_cjk(font, text, max_w)[:max_lines]
+    else:
+        words = text.split(" ")
+        line, lines = "", []
+        for w in words:
+            test = (line + " " + w).strip()
+            bb = font.getbbox(test)
+            if bb[2] - bb[0] > max_w and line:
+                lines.append(line)
+                line = w
+                if len(lines) >= max_lines:
+                    break
+            else:
+                line = test
+        if line and len(lines) < max_lines:
             lines.append(line)
-            line = w
-            if len(lines) >= max_lines:
-                break
-        else:
-            line = test
-    if line and len(lines) < max_lines:
-        lines.append(line)
     for i, ln in enumerate(lines):
         draw.text((x, y + i * line_h), ln, font=font, fill=fill)
     return len(lines) * line_h
@@ -223,7 +226,7 @@ def layout_rects(W, H):
     top_m = max(10, int(H * 0.02))
     prog_h = max(4, int(H * 0.0055))
     gap_after_vid = max(4, int(H * 0.007))
-    gap_prog_bar = max(7, int(H * 0.012))
+    gap_prog_bar = max(3, int(H * 0.002))
 
     bottom_reserved = gap_after_vid + prog_h + gap_prog_bar + bh + margin
     avail_h = H - top_m - bottom_reserved
@@ -355,24 +358,26 @@ def build_cal_segments(artists):
 
 
 def sample_dominant_color(img):
-    """Sample dominant color from center 40% of cover. Falls back to violet if too dark."""
+    """Sample an aesthetic highlight color from the cover art."""
     if img is None:
         return FALLBACK_HUE
     try:
-        w, h = img.size
-        cx, cy = w // 2, h // 2
-        rw, rh = int(w * 0.4), int(h * 0.4)
-        region = img.crop((cx - rw // 2, cy - rh // 2, cx + rw // 2, cy + rh // 2))
-        small = region.resize((16, 16), Image.LANCZOS).convert("RGB")
+        small = img.resize((32, 32), Image.LANCZOS).convert("RGB")
         pixels = list(small.getdata())
-        r = sum(p[0] for p in pixels) // len(pixels)
-        g = sum(p[1] for p in pixels) // len(pixels)
-        b = sum(p[2] for p in pixels) // len(pixels)
-        lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
-        if lum < 0.18:
-            return FALLBACK_HUE
-        if max(r, g, b) - min(r, g, b) < 30:
-            return FALLBACK_HUE
+        # Filter out absolute greys and pure black/white
+        colored = [p for p in pixels if max(p) - min(p) > 20 and max(p) > 40]
+        if not colored:
+            colored = pixels # fallback to average if monochromatic
+
+        r = sum(p[0] for p in colored) // len(colored)
+        g = sum(p[1] for p in colored) // len(colored)
+        b = sum(p[2] for p in colored) // len(colored)
+        
+        # Boost saturation slightly
+        mx, mn = max(r,g,b), min(r,g,b)
+        if mx > 0 and mx - mn > 0:
+            scale = 255 / mx
+            r, g, b = int(r*scale*0.7 + r*0.3), int(g*scale*0.7 + g*0.3), int(b*scale*0.7 + b*0.3)
         return (r, g, b)
     except Exception:
         return FALLBACK_HUE
@@ -390,7 +395,15 @@ def draw_frosted_panel(canvas, box, radius=PANEL_RADIUS, tint=PANEL_BG, border=P
         return
 
     region = canvas.crop((x0, y0, x1, y1)).convert("RGBA")
-    blurred = region.filter(ImageFilter.GaussianBlur(radius=blur_r))
+    
+    scale_factor = 4 if blur_r >= 8 else 1
+    if scale_factor > 1:
+        sw, sh = max(1, w // scale_factor), max(1, h // scale_factor)
+        sr = max(1, blur_r // scale_factor)
+        blurred = region.resize((sw, sh), Image.BILINEAR).filter(ImageFilter.GaussianBlur(radius=sr)).resize((w, h), Image.LANCZOS)
+    else:
+        blurred = region.filter(ImageFilter.GaussianBlur(radius=blur_r))
+
     tint_layer = Image.new("RGBA", (w, h), tint)
     frosted = Image.alpha_composite(blurred, tint_layer)
 
@@ -409,15 +422,18 @@ def draw_glow(canvas, cx, cy, radius, color_rgb, opacity=0.12):
     """Soft radial glow blob."""
     r, g, b = color_rgb
     a = int(255 * opacity)
-    sz = radius * 2
-    glow = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+    sz = int(radius * 2)
+    blur_r = int(radius * 0.8)
+    cw = sz + blur_r * 4
+    
+    glow = Image.new("RGBA", (cw, cw), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
-    for i in range(6):
-        shrink = i * (sz // 14)
-        alpha = max(0, a - i * (a // 7))
-        gd.ellipse([shrink, shrink, sz - shrink, sz - shrink], fill=(r, g, b, alpha))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=sz // 5))
-    canvas.alpha_composite(glow, (cx - radius, cy - radius))
+    
+    pad = blur_r * 2
+    gd.ellipse([pad, pad, pad + sz, pad + sz], fill=(r, g, b, a))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=blur_r))
+    
+    canvas.alpha_composite(glow, (int(cx - cw / 2), int(cy - cw / 2)))
 
 
 def draw_bokeh(canvas, W, H, hero_rgb, count=18, max_opacity=0.08, seed=42):
@@ -586,6 +602,20 @@ def _load_avatar_b64(b64_str, size):
         return None
 
 
+avatar_img_cache = {}
+
+def _load_avatar_cached(b64_str, size):
+    if not b64_str:
+        return None
+    key = (hash(b64_str), size)
+    if key in avatar_img_cache:
+        return avatar_img_cache[key]
+    img = _load_avatar_b64(b64_str, size)
+    if img:
+        avatar_img_cache[key] = img
+    return img
+
+
 def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_window, participants_data):
     """
     Party-rank overlay. Right panel shows round profile pics + individual scores.
@@ -601,11 +631,13 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     hero = sample_dominant_color(cover_img)
 
     if cover_img:
-        sc = max(W / cover_img.width, H / cover_img.height) * 1.06
-        bw, bh = int(cover_img.width * sc), int(cover_img.height * sc)
-        bg = cover_img.resize((bw, bh), Image.LANCZOS)
-        bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 14))
+        sw, sh = W // 8, H // 8
+        sc = max(sw / cover_img.width, sh / cover_img.height) * 1.06
+        dw, dh = int(cover_img.width * sc), int(cover_img.height * sc)
+        bg = cover_img.resize((dw, dh), Image.BILINEAR)
+        bg = bg.crop(((dw - sw) // 2, (dh - sh) // 2, (dw - sw) // 2 + sw, (dh - sh) // 2 + sh))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=(W // 14) // 8))
+        bg = bg.resize((W, H), Image.LANCZOS)
         bg = ImageEnhance.Brightness(bg).enhance(0.50)
         bg = ImageEnhance.Color(bg).enhance(1.0)
         canvas.paste(bg.convert("RGBA"), (0, 0))
@@ -652,35 +684,50 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     draw.line([(bx + PANEL_RADIUS, by), (bx1 - PANEL_RADIUS, by)],
               fill=(*hero, int(255 * 0.75)), width=2)
 
+    # Type badge (OP/ED/etc) — colored accent pill
     type_font = fonts["type_badge"]
-    type_w = max(52, _text_width(type_font, "OTHER") + 14)
-    draw.rounded_rectangle([bx + 6, by + 6, bx + type_w - 2, by + bh - 6],
-                            radius=6, fill=(*hero, 220))
     st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
-    draw.text((bx + type_w // 2, by + bh // 2), st_abbr,
-              font=type_font, fill=(255, 255, 255, 255), anchor="mm")
-
-    content_left = bx + type_w + 12
-    content_right = bx1 - 12
-    credits_cx = (content_left + content_right) // 2
-    credits_max_w = max(80, content_right - content_left)
+    type_w = max(60, _text_width(type_font, st_abbr) + 24)
+    type_h = max(34, int(bh * 0.45))
+    
+    # Text block centers exactly on the bottom bar
+    credits_cx = (bx + bx1) // 2
+    credits_max_w = max(80, (bx1 - bx) - 64 - type_w)
 
     song_t = entry.get("title", "")
     artists = entry.get("artists", [])
     voc = ", ".join(a["name"] for a in artists if a.get("role_id") == 1)
-    line1_core = f"{song_t} / {voc}" if voc else song_t
-    fs = max(20, min(40, int(1200 / max(len(line1_core), 12))))
+    
+    fs_title = max(18, min(36, int(850 / max(len(song_t), 12))))
     try:
-        tf = ImageFont.truetype(fonts["lat_path"], fs) if fonts.get("lat_path") else fonts["bar_title"]
+        if fonts.get("lat_path") and not any(_is_cjk(c) for c in song_t):
+            tf = ImageFont.truetype(fonts["lat_path"], fs_title)
+        elif fonts.get("jp_path"):
+            tf = ImageFont.truetype(fonts["jp_path"], fs_title)
+        else:
+            tf = fonts["bar_title"]
     except Exception:
         tf = fonts["bar_title"]
-    line1 = fit_text_width(tf, line1_core, credits_max_w)
-    tbb = tf.getbbox(line1)
+    
+    fs_voc = max(14, int(fs_title * 0.75))
+    try:
+        if fonts.get("lat_path") and not any(_is_cjk(c) for c in voc):
+            vf = ImageFont.truetype(fonts["lat_path"], fs_voc)
+        elif fonts.get("jp_path"):
+            vf = ImageFont.truetype(fonts["jp_path"], fs_voc)
+        else:
+            vf = fonts["badge"]
+    except Exception:
+        vf = fonts["badge"]
+
+    title_clean = fit_text_width(tf, song_t, credits_max_w - (_text_width(vf, " — " + voc) if voc else 0))
+    tw = _text_width(tf, title_clean)
+    vw = _text_width(vf, " — " + voc) if voc else 0
+    tbb = tf.getbbox(title_clean)
     title_h = tbb[3] - tbb[1]
 
     cal_font = fonts["bar_cal"]
     cal_segs = build_cal_segments(artists)
-    w_line1 = _text_width(tf, line1)
     w_cal = segments_width(cal_font, cal_segs) if cal_segs else 0
     gap_title_cal = max(10, int(title_h * 0.38)) if cal_segs else 0
     try:
@@ -702,7 +749,37 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     block_h = title_h + gap_title_cal + cal_h + gap_cal_game + game_h
     y_block_top = by + max(0, (bh - block_h) // 2)
 
-    draw.text((credits_cx - w_line1 // 2, y_block_top), line1, font=tf, fill=TEXT_PRIMARY)
+    cx_line1 = credits_cx - (tw + vw) // 2
+    
+    group_left = cx_line1
+    if cal_segs:
+        group_left = min(group_left, credits_cx - w_cal // 2)
+    if game_t:
+        game_w = _text_width(game_font, game_t)
+        group_left = min(group_left, credits_cx - game_w // 2)
+    
+    # Draw badge flanking the title text group (prevent overlap)
+    badge_x = max(bx + 16, group_left - type_w - 24)
+    badge_y = by + (bh - type_h) // 2
+    sf = 3
+    pill = Image.new("RGBA", (type_w * sf, type_h * sf), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(pill)
+    pd.rounded_rectangle([0, 0, (type_w * sf) - 1, (type_h * sf) - 1],
+                         radius=(type_h * sf) // 2,
+                         outline=(*type_color, 210), width=2 * sf,
+                         fill=(*type_color, 30))
+    pill = pill.resize((type_w, type_h), Image.LANCZOS)
+    canvas.alpha_composite(pill, (badge_x, badge_y))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((badge_x + type_w // 2, badge_y + type_h // 2), st_abbr,
+              font=type_font, fill=type_color, anchor="mm")
+
+    draw.text((cx_line1, y_block_top), title_clean, font=tf, fill=(255, 255, 255, 255))
+    if voc:
+        vbb = vf.getbbox(" — " + voc)
+        y_voc = y_block_top + (tbb[1] + tbb[3] - vbb[1] - vbb[3]) / 2
+        draw.text((cx_line1 + tw, y_voc), " — " + voc, font=vf, fill=(180, 188, 200, 255))
+
     if cal_segs:
         y_cal = y_block_top + title_h + gap_title_cal
         draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
@@ -728,10 +805,10 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     rank = entry.get("rank", 0)
     rh = int(pw * 0.26)
     rank_str = f"#{rank}"
-    draw_glow(canvas, pcx, py0 + rh // 2, rh // 2, ACCENT_VIOLET[:3], opacity=0.12)
+    draw_glow(canvas, pcx, py0 + rh // 2, rh // 2, hero, opacity=0.15)
     draw = ImageDraw.Draw(canvas)
     draw.text((pcx, py0 + rh // 2), rank_str, font=fonts["rank_big"],
-              fill=ACCENT_VIOLET, anchor="mm")
+              fill=(*hero, 255), anchor="mm")
 
     # ── Participant grid layout ───────────────────────────────────────────────
     n = len(participants_data)
@@ -795,7 +872,7 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
         av_cx = cx_cell
         av_cy = cy_cell + name_line_h + av_d // 2
 
-        avatar_img = _load_avatar_b64(p.get("avatar_b64", ""), av_d)
+        avatar_img = _load_avatar_cached(p.get("avatar_b64", ""), av_d)
         if avatar_img:
             canvas.alpha_composite(avatar_img, (av_cx - av_d // 2, av_cy - av_d // 2))
         else:
@@ -854,11 +931,13 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     hero = sample_dominant_color(cover_img)
 
     if cover_img:
-        sc = max(W / cover_img.width, H / cover_img.height) * 1.06
-        bw, bh = int(cover_img.width * sc), int(cover_img.height * sc)
-        bg = cover_img.resize((bw, bh), Image.LANCZOS)
-        bg = bg.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=W // 14))
+        sw, sh = W // 8, H // 8
+        sc = max(sw / cover_img.width, sh / cover_img.height) * 1.06
+        dw, dh = int(cover_img.width * sc), int(cover_img.height * sc)
+        bg = cover_img.resize((dw, dh), Image.BILINEAR)
+        bg = bg.crop(((dw - sw) // 2, (dh - sh) // 2, (dw - sw) // 2 + sw, (dh - sh) // 2 + sh))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=(W // 14) // 8))
+        bg = bg.resize((W, H), Image.LANCZOS)
         bg = ImageEnhance.Brightness(bg).enhance(0.50)
         bg = ImageEnhance.Color(bg).enhance(1.0)
         canvas.paste(bg.convert("RGBA"), (0, 0))
@@ -907,36 +986,50 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     draw.line([(bx + PANEL_RADIUS, by), (bx1 - PANEL_RADIUS, by)],
               fill=(*hero, int(255 * 0.75)), width=2)
 
-    # Type badge (OP/ED/etc) — violet accent pill
+    # Type badge (OP/ED/etc) — colored accent pill
     type_font = fonts["type_badge"]
-    type_w = max(52, _text_width(type_font, "OTHER") + 14)
-    draw.rounded_rectangle([bx + 6, by + 6, bx + type_w - 2, by + bh - 6],
-                            radius=6, fill=(*hero, 220))
     st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
-    draw.text((bx + type_w // 2, by + bh // 2), st_abbr,
-              font=type_font, fill=(255, 255, 255, 255), anchor="mm")
-
-    content_left = bx + type_w + 12
-    content_right = bx1 - 12
-    credits_cx = (content_left + content_right) // 2
-    credits_max_w = max(80, content_right - content_left)
+    type_w = max(60, _text_width(type_font, st_abbr) + 24)
+    type_h = max(34, int(bh * 0.45))
+    
+    # Text block centers exactly on the bottom bar
+    credits_cx = (bx + bx1) // 2
+    credits_max_w = max(80, (bx1 - bx) - 64 - type_w)
 
     song_t = entry.get("title", "")
     artists = entry.get("artists", [])
     voc = ", ".join(a["name"] for a in artists if a.get("role_id") == 1)
-    line1_core = f"{song_t} / {voc}" if voc else song_t
-    fs = max(20, min(40, int(1200 / max(len(line1_core), 12))))
+    
+    fs_title = max(18, min(36, int(850 / max(len(song_t), 12))))
     try:
-        tf = ImageFont.truetype(fonts["lat_path"], fs) if fonts.get("lat_path") else fonts["bar_title"]
+        if fonts.get("lat_path") and not any(_is_cjk(c) for c in song_t):
+            tf = ImageFont.truetype(fonts["lat_path"], fs_title)
+        elif fonts.get("jp_path"):
+            tf = ImageFont.truetype(fonts["jp_path"], fs_title)
+        else:
+            tf = fonts["bar_title"]
     except Exception:
         tf = fonts["bar_title"]
-    line1 = fit_text_width(tf, line1_core, credits_max_w)
-    tbb = tf.getbbox(line1)
+    
+    fs_voc = max(14, int(fs_title * 0.75))
+    try:
+        if fonts.get("lat_path") and not any(_is_cjk(c) for c in voc):
+            vf = ImageFont.truetype(fonts["lat_path"], fs_voc)
+        elif fonts.get("jp_path"):
+            vf = ImageFont.truetype(fonts["jp_path"], fs_voc)
+        else:
+            vf = fonts["badge"]
+    except Exception:
+        vf = fonts["badge"]
+
+    title_clean = fit_text_width(tf, song_t, credits_max_w - (_text_width(vf, " — " + voc) if voc else 0))
+    tw = _text_width(tf, title_clean)
+    vw = _text_width(vf, " — " + voc) if voc else 0
+    tbb = tf.getbbox(title_clean)
     title_h = tbb[3] - tbb[1]
 
     cal_font = fonts["bar_cal"]
     cal_segs = build_cal_segments(artists)
-    w_line1 = _text_width(tf, line1)
     w_cal = segments_width(cal_font, cal_segs) if cal_segs else 0
     gap_title_cal = max(10, int(title_h * 0.38)) if cal_segs else 0
     try:
@@ -949,7 +1042,34 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     block_h = title_h + gap_title_cal + cal_h
     y_block_top = by + max(0, (bh - block_h) // 2)
 
-    draw.text((credits_cx - w_line1 // 2, y_block_top), line1, font=tf, fill=TEXT_PRIMARY)
+    cx_line1 = credits_cx - (tw + vw) // 2
+    
+    group_left = cx_line1
+    if cal_segs:
+        group_left = min(group_left, credits_cx - w_cal // 2)
+        
+    # Draw badge flanking the title text group (prevent overlap)
+    badge_x = max(bx + 16, group_left - type_w - 24)
+    badge_y = by + (bh - type_h) // 2
+    sf = 3
+    pill = Image.new("RGBA", (type_w * sf, type_h * sf), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(pill)
+    pd.rounded_rectangle([0, 0, (type_w * sf) - 1, (type_h * sf) - 1],
+                         radius=(type_h * sf) // 2,
+                         outline=(*type_color, 210), width=2 * sf,
+                         fill=(*type_color, 30))
+    pill = pill.resize((type_w, type_h), Image.LANCZOS)
+    canvas.alpha_composite(pill, (badge_x, badge_y))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((badge_x + type_w // 2, badge_y + type_h // 2), st_abbr,
+              font=type_font, fill=type_color, anchor="mm")
+
+    draw.text((cx_line1, y_block_top), title_clean, font=tf, fill=(255, 255, 255, 255))
+    if voc:
+        vbb = vf.getbbox(" — " + voc)
+        y_voc = y_block_top + (tbb[1] + tbb[3] - vbb[1] - vbb[3]) / 2
+        draw.text((cx_line1 + tw, y_voc), " — " + voc, font=vf, fill=(180, 188, 200, 255))
+
     if cal_segs:
         y_cal = y_block_top + title_h + gap_title_cal
         draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
@@ -975,10 +1095,10 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     rh = int(pw * 0.30)
     rank_str = f"#{rank}"
     # Soft glow behind rank text
-    draw_glow(canvas, pcx, py0 + rh // 2, rh // 2, ACCENT_VIOLET[:3], opacity=0.12)
+    draw_glow(canvas, pcx, py0 + rh // 2, rh // 2, hero, opacity=0.15)
     draw = ImageDraw.Draw(canvas)
     draw.text((pcx, py0 + rh // 2), rank_str, font=fonts["rank_big"],
-              fill=ACCENT_VIOLET, anchor="mm")
+              fill=(*hero, 255), anchor="mm")
 
     # Separator line
     sep_y = py0 + rh
@@ -993,13 +1113,17 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
         sc2 = min(cov_w / cover_img.width, cov_h / cover_img.height)
         dw, dh = int(cover_img.width * sc2), int(cover_img.height * sc2)
         fit = cover_img.resize((dw, dh), Image.LANCZOS).convert("RGBA")
-        panel = Image.new("RGBA", (cov_w, cov_h), (0, 0, 0, 0))
-        panel.paste(fit, ((cov_w - dw) // 2, (cov_h - dh) // 2))
-        # Soft hero-tinted border on cover
-        bd = ImageDraw.Draw(panel)
-        bd.rounded_rectangle([0, 0, cov_w - 1, cov_h - 1], radius=8,
-                              outline=(*hero, int(255 * 0.75)), width=2)
-        canvas.alpha_composite(panel, (cx0, cov_top))
+        
+        # Draw on canvas
+        px = cx0 + (cov_w - dw) // 2
+        py = cov_top + (cov_h - dh) // 2
+        
+        # Paste image
+        canvas.alpha_composite(fit, (px, py))
+        
+        # Tight subtle outline EXACTLY on image
+        draw.rectangle([px, py, px + dw - 1, py + dh - 1],
+                       outline=(*hero, int(255 * 0.4)), width=1)
     else:
         draw_frosted_panel(canvas, (cx0, cov_top, cx0 + cov_w, cov_top + cov_h), radius=8)
         draw = ImageDraw.Draw(canvas)
@@ -1007,40 +1131,48 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
                   font=fonts["badge"], fill=TEXT_SECONDARY, anchor="mm")
 
     draw = ImageDraw.Draw(canvas)
-    meta_y = cov_top + cov_h + 12
+    meta_y = cov_top + cov_h + 16
     vn_ro = (entry.get("vn_romaji") or entry.get("game") or "").strip()
     vn_jp = (entry.get("vn_title_jp") or entry.get("game_jp") or "").strip()
-    meta_max_w = max(40, pw - 8)
+    pw_inner = pw - 32
+    meta_x = rx0 + 16
     lbl_font = fonts["badge"]
-    lbl_gap = 16
+    lbl_gap = max(20, H // 44)
+    sect_gap = max(18, H // 34)
 
-    # <<TITLE>>
-    draw_hcentered_line(draw, "<<TITLE>>", lbl_font, pcx, meta_y, TEXT_SECONDARY)
+    def draw_label(d, txt, f, x, y, c):
+        sp = " ".join(list(txt.upper()))
+        d.text((x, y), sp, font=f, fill=c)
+        
+    def _lh(f):
+        # Dynamically sample line-height using ascenders/descenders
+        bb = f.getbbox("Agシ")
+        return (bb[3] - bb[1]) + max(6, H // 120)
+
+    draw_label(draw, "TITLE", lbl_font, meta_x, meta_y, TEXT_SECONDARY)
     meta_y += lbl_gap
     if vn_ro:
-        meta_y += wrap_text_centered(draw, vn_ro, fonts["game"], pcx, meta_y,
-                                     meta_max_w, 24, TEXT_PRIMARY, max_lines=2)
-        meta_y += 3
+        meta_y += wrap_text(draw, vn_ro, fonts["game"], meta_x, meta_y,
+                            pw_inner, _lh(fonts["game"]), TEXT_PRIMARY, max_lines=2)
+        meta_y += max(4, H // 180)
     if vn_jp and vn_jp != vn_ro:
-        meta_y += wrap_text_centered(draw, vn_jp, fonts["jp"], pcx, meta_y,
-                                     meta_max_w, 22, TEXT_PRIMARY, max_lines=3)
-    meta_y += 10
+        meta_y += wrap_text(draw, vn_jp, fonts["jp"], meta_x, meta_y,
+                            pw_inner, _lh(fonts["jp"]), TEXT_SECONDARY, max_lines=3)
+    meta_y += sect_gap
 
-    # <<DEVELOPER>>
     dev = (entry.get("vn_developers") or "").strip()
-    draw_hcentered_line(draw, "<<DEVELOPER>>", lbl_font, pcx, meta_y, TEXT_SECONDARY)
-    meta_y += lbl_gap
     if dev:
-        meta_y += wrap_text_centered(draw, dev, fonts["role_nm"], pcx, meta_y,
-                                     meta_max_w, 20, TEXT_PRIMARY, max_lines=2)
-    meta_y += 10
+        draw_label(draw, "DEVELOPER", lbl_font, meta_x, meta_y, TEXT_SECONDARY)
+        meta_y += lbl_gap
+        meta_y += wrap_text(draw, dev, fonts["role_nm"], meta_x, meta_y,
+                            pw_inner, _lh(fonts["role_nm"]), TEXT_PRIMARY, max_lines=2)
+        meta_y += sect_gap
 
-    # <<RELEASE DATE>>
     rel = (entry.get("vn_released") or "").strip()
-    draw_hcentered_line(draw, "<<RELEASE DATE>>", lbl_font, pcx, meta_y, TEXT_SECONDARY)
-    meta_y += lbl_gap
     if rel:
-        draw_hcentered_line(draw, rel, fonts["role_nm"], pcx, meta_y, TEXT_PRIMARY)
+        draw_label(draw, "RELEASE", lbl_font, meta_x, meta_y, TEXT_SECONDARY)
+        meta_y += lbl_gap
+        draw.text((meta_x, meta_y), rel, font=fonts["role_nm"], fill=TEXT_PRIMARY)
 
     canvas.save(out_path, "PNG")
 
@@ -1295,7 +1427,7 @@ def file_has_audio(path: Path) -> bool:
 
 
 def ffmpeg(args, verbose):
-    cmd = ["ffmpeg", "-hide_banner"] + ([] if verbose else ["-loglevel", "error"]) + args
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner"] + ([] if verbose else ["-loglevel", "error"]) + args
     r = subprocess.run(cmd, capture_output=not verbose)
     if r.returncode != 0 and not verbose:
         print(f"\n  FFmpeg error:\n{r.stderr.decode(errors='replace')}")
@@ -1348,8 +1480,10 @@ def make_clip_composite(
             scale_chain = f"[0:v]scale={vw}:{vh}:flags=lanczos,setsar=1[vs]"
         else:
             scale_chain = (
-                f"[0:v]scale={vw}:{vh}:force_original_aspect_ratio=decrease:flags=lanczos,"
-                f"pad={vw}:{vh}:(ow-iw)/2:(oh-ih)/2:color=0x050508,setsar=1[vs]"
+                f"[0:v]split=2[vbg_in][vfg_in];"
+                f"[vbg_in]scale={vw}:{vh}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={vw}:{vh},boxblur=20:4,colorchannelmixer=rr=0.85:gg=0.85:bb=0.85[vbg];"
+                f"[vfg_in]scale={vw}:{vh}:force_original_aspect_ratio=decrease:flags=lanczos[vfg];"
+                f"[vbg][vfg]overlay=(W-w)/2:(H-h)/2,setsar=1[vs]"
             )
         fc = (
             f"color=c=0x0a0d12:s={W}x{H}:d={td}:r={fps},format=rgba[bg];"
@@ -1829,27 +1963,22 @@ def main():
     print(f"{'─'*60}\n")
 
     clip_paths, durations = [], []
-    no_audio = 0
-    downloaded_count = 0
-    used_cached_count = 0
-    skipped_clips_count = 0
+    no_audio = downloaded_count = used_cached_count = skipped_clips_count = 0
 
-    for i, entry in enumerate(entries):
+    import threading
+    import concurrent.futures
+    print_lock = threading.Lock()
+
+    def process_song(i, entry):
         rank = entry.get("rank", i + 1)
         title = entry.get("title", "?")
-        print(f"\n  [{i+1:>3}/{len(entries)}] #{rank} — {title}")
-
+        logs = [f"\n  [{i+1:>3}/{len(entries)}] #{rank} — {title}"]
         clip_path = str(clips_dir / f"{rank:04d}.mp4")
         
-        # Check if clip exists and we should skip it (default behavior)
-        # Party renders are never skipped — scores/avatars may have changed
         is_party_clip = bool(entry.get("party_participants_data"))
         if skip_existing and not is_party_clip and os.path.isfile(clip_path) and os.path.getsize(clip_path) > 4096:
-            print("    ✓ clip exists, skipping (use --force-render to re-render)")
-            clip_paths.append(clip_path)
-            durations.append(float(entry.get("duration", 30)))
-            skipped_clips_count += 1
-            continue
+            logs.append("    ✓ clip exists, skipping (use --force-render to re-render)")
+            return (i, clip_path, float(entry.get("duration", 30)), True, logs, "skipped")
 
         cover_img = None
         cover_url = entry.get("cover_url")
@@ -1857,26 +1986,26 @@ def main():
         if cover_url:
             cover_img = download_cover(cover_url, cv_dest, sess)
             status = f"✓ {cover_img.width}x{cover_img.height}" if cover_img else "✗ download failed"
-            print(f"    Cover:  {status}")
+            logs.append(f"    Cover:  {status}")
         else:
-            print("    Cover:  none")
+            logs.append("    Cover:  none")
 
-        # Resolve media path with persistent caching
-        media_path, media_source, was_cached = resolve_media_path_persistent(
+        media_path, media_source, _ = resolve_media_path_persistent(
             entry, pl_path, audio_session, audio_cache, video_cache
         )
         
+        m_stat = "missing"
         if media_source == "downloaded":
-            downloaded_count += 1
-            print(f"    Media:  ✓ downloaded: {media_path.name}")
+            m_stat = "downloaded"
+            logs.append(f"    Media:  ✓ downloaded: {media_path.name}")
         elif media_source == "cached":
-            used_cached_count += 1
-            print(f"    Media:  ✓ from cache: {media_path.name}")
+            m_stat = "cached"
+            logs.append(f"    Media:  ✓ from cache: {media_path.name}")
         elif media_source == "local":
-            print(f"    Media:  ✓ local: {media_path.name}")
+            m_stat = "local"
+            logs.append(f"    Media:  ✓ local: {media_path.name}")
         else:
-            print(f"    Media:  ✗ not available")
-            no_audio += 1
+            logs.append(f"    Media:  ✗ not available")
 
         overlay_path = str(frames / f"{rank:04d}.png")
         is_video = media_path and media_kind(media_path) == "video"
@@ -1887,15 +2016,12 @@ def main():
             render_overlay(entry, cover_img, fonts, W, H, overlay_path,
                            has_video_window=hole, participants_data=_pd)
 
-        print("    Overlay: rendering…", end="", flush=True)
+        logs.append("    Overlay: rendering…")
         try:
             render_ov(is_video)
-            print(" ✓")
         except Exception as e:
-            print(f" ✗ {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+            logs.append(f"    ✗ overlay error: {e}")
+            return (i, clip_path, 0, False, logs, m_stat)
 
         dur = float(entry.get("duration", 30))
         start = float(entry.get("start_time", 0))
@@ -1903,87 +2029,50 @@ def main():
         if media_path and media_path.is_file():
             has_aud = file_has_audio(media_path)
             ok = make_clip_composite(
-                str(media_path),
-                overlay_path,
-                clip_path,
-                dur,
-                start,
-                fps,
-                args.crf,
-                args.preset,
-                args.verbose,
-                W,
-                H,
-                L["vx"],
-                L["vy"],
-                L["vw"],
-                L["vh"],
-                is_video,
-                aspect_mode,
-                L["prog_x"],
-                L["prog_y"],
-                L["prog_w"],
-                L["prog_h"],
-                media_has_audio=has_aud,
-                hero_rgb=hero_rgb,
+                str(media_path), overlay_path, clip_path, dur, start, fps,
+                args.crf, args.preset, args.verbose, W, H, L["vx"], L["vy"],
+                L["vw"], L["vh"], is_video, aspect_mode, L["prog_x"], L["prog_y"],
+                L["prog_w"], L["prog_h"], media_has_audio=has_aud, hero_rgb=hero_rgb,
             )
             if not ok and is_video:
-                print("    ⚠ Retrying as audio-only (no video decode)…")
+                logs.append("    ⚠ Retrying as audio-only (no video decode)…")
                 try:
                     render_ov(False)
-                except Exception as e:
-                    print(f"    ✗ overlay re-render: {e}")
-                    ok = False
-                else:
                     ok = make_clip_composite(
-                        str(media_path),
-                        overlay_path,
-                        clip_path,
-                        dur,
-                        start,
-                        fps,
-                        args.crf,
-                        args.preset,
-                        args.verbose,
-                        W,
-                        H,
-                        L["vx"],
-                        L["vy"],
-                        L["vw"],
-                        L["vh"],
-                        False,
-                        aspect_mode,
-                        L["prog_x"],
-                        L["prog_y"],
-                        L["prog_w"],
-                        L["prog_h"],
-                        media_has_audio=has_aud,
+                        str(media_path), overlay_path, clip_path, dur, start, fps,
+                        args.crf, args.preset, args.verbose, W, H, L["vx"], L["vy"],
+                        L["vw"], L["vh"], False, aspect_mode, L["prog_x"], L["prog_y"],
+                        L["prog_w"], L["prog_h"], media_has_audio=has_aud,
                     )
+                except Exception:
+                    ok = False
         else:
-            print("    Media:  ─ no media file → silence")
+            logs.append("    Media:  ─ no media file → silence")
             ok = make_silent_clip_composite(
-                overlay_path,
-                clip_path,
-                dur,
-                fps,
-                args.crf,
-                args.preset,
-                args.verbose,
-                W,
-                H,
-                L["prog_x"],
-                L["prog_y"],
-                L["prog_w"],
-                L["prog_h"],
-                hero_rgb=hero_rgb,
+                overlay_path, clip_path, dur, fps, args.crf, args.preset, args.verbose, W, H,
+                L["prog_x"], L["prog_y"], L["prog_w"], L["prog_h"], hero_rgb=hero_rgb,
             )
 
-        if ok:
-            clip_paths.append(clip_path)
-            durations.append(dur)
-            print("    Clip:   ✓")
-        else:
-            print("    Clip:   ✗ FFmpeg failed")
+        logs.append("    Clip:   ✓" if ok else "    Clip:   ✗ FFmpeg failed")
+        return (i, clip_path, dur, ok, logs, m_stat)
+
+    results = [None] * len(entries)
+    # Use 3 workers to maintain reasonable system load on FFmpeg encode
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        worker_futures = [executor.submit(process_song, i, e) for i, e in enumerate(entries)]
+        for future in worker_futures:
+            i, cp, dur, ok, logs, m_stat = future.result()
+            print("\n".join(logs))
+            if m_stat == "skipped": skipped_clips_count += 1
+            elif m_stat == "downloaded": downloaded_count += 1
+            elif m_stat == "cached": used_cached_count += 1
+            elif m_stat == "missing": no_audio += 1
+            results[i] = (cp, dur, ok)
+
+    for res in results:
+        if res and res[2]:
+            clip_paths.append(res[0])
+            durations.append(res[1])
 
     if not clip_paths:
         sys.exit("\nERROR: No clips generated successfully.")
