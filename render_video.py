@@ -1139,32 +1139,95 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     def draw_label(d, txt, f, x, y, c):
         sp = " ".join(list(txt.upper()))
         d.text((x, y), sp, font=f, fill=c)
-        
+
     def _lh(f):
-        # Dynamically sample line-height using ascenders/descenders
         bb = f.getbbox("Agシ")
         return (bb[3] - bb[1]) + max(6, H // 120)
+
+    dev = (entry.get("vn_developers") or "").strip()
+    rel = (entry.get("vn_released") or "").strip()
+    show_jp = bool(vn_jp and vn_jp != vn_ro)
+    lh_jp  = _lh(fonts["jp"])
+    lh_dev = _lh(fonts["role_nm"])
+
+    # Pre-measure cost of the sections below the romaji title
+    jp_lines_n  = min(3, len(_wrap_cjk(fonts["jp"], vn_jp, pw_inner))) if show_jp else 0
+    jp_cost  = jp_lines_n * lh_jp + sect_gap if jp_lines_n else sect_gap
+    dev_cost = (lbl_gap + min(2, max(1, len(dev.split()))) * lh_dev + sect_gap) if dev else 0
+    rel_cost = (lbl_gap + lh_dev) if rel else 0
+
+    meta_budget = panel_bottom - meta_y - 8
+    ro_budget = meta_budget - lbl_gap - jp_cost - dev_cost - rel_cost - max(4, H // 180)
+
+    # Find the largest font that shows the FULL romaji title within ro_budget height.
+    # The simulation counts ALL lines needed (no artificial cap).
+    ro_font = fonts["game"]
+    ro_actual_lines = 20  # will be computed below
+    min_sz = max(9, int(H / 46) // 2)
+    if vn_ro and ro_budget > 0 and fonts.get("lat_path"):
+        default_sz = int(H / 46)
+        for sz in range(default_sz, min_sz - 1, -1):
+            try:
+                f_try = ImageFont.truetype(fonts["lat_path"], sz)
+            except Exception:
+                break
+            # Count every line the title ACTUALLY needs at this size (no cap)
+            words = vn_ro.split(" ")
+            line, sim_lines = "", []
+            for w in words:
+                test = (line + " " + w).strip()
+                bb_t = f_try.getbbox(test)
+                if (bb_t[2] - bb_t[0]) > pw_inner and line:
+                    sim_lines.append(line)
+                    line = w
+                else:
+                    line = test
+            if line:
+                sim_lines.append(line)
+            lh_try = (f_try.getbbox("Ag")[3] - f_try.getbbox("Ag")[1]) + max(6, H // 120)
+            if len(sim_lines) * lh_try <= ro_budget:
+                ro_font = f_try
+                ro_actual_lines = len(sim_lines)
+                break
+        else:
+            # Fallback: minimum font; compute actual lines for wrap_text
+            try:
+                ro_font = ImageFont.truetype(fonts["lat_path"], min_sz)
+            except Exception:
+                pass
+            words = vn_ro.split(" ")
+            line, sim_lines = "", []
+            for w in words:
+                test = (line + " " + w).strip()
+                if _text_width(ro_font, test) > pw_inner and line:
+                    sim_lines.append(line)
+                    line = w
+                else:
+                    line = test
+            if line:
+                sim_lines.append(line)
+            ro_actual_lines = len(sim_lines)
+    else:
+        ro_actual_lines = 3
 
     draw_label(draw, "TITLE", lbl_font, meta_x, meta_y, TEXT_SECONDARY)
     meta_y += lbl_gap
     if vn_ro:
-        meta_y += wrap_text(draw, vn_ro, fonts["game"], meta_x, meta_y,
-                            pw_inner, _lh(fonts["game"]), TEXT_PRIMARY, max_lines=2)
+        meta_y += wrap_text(draw, vn_ro, ro_font, meta_x, meta_y,
+                            pw_inner, _lh(ro_font), TEXT_PRIMARY, max_lines=ro_actual_lines)
         meta_y += max(4, H // 180)
-    if vn_jp and vn_jp != vn_ro:
+    if show_jp:
         meta_y += wrap_text(draw, vn_jp, fonts["jp"], meta_x, meta_y,
-                            pw_inner, _lh(fonts["jp"]), TEXT_SECONDARY, max_lines=3)
+                            pw_inner, lh_jp, TEXT_SECONDARY, max_lines=3)
     meta_y += sect_gap
 
-    dev = (entry.get("vn_developers") or "").strip()
     if dev:
         draw_label(draw, "DEVELOPER", lbl_font, meta_x, meta_y, TEXT_SECONDARY)
         meta_y += lbl_gap
         meta_y += wrap_text(draw, dev, fonts["role_nm"], meta_x, meta_y,
-                            pw_inner, _lh(fonts["role_nm"]), TEXT_PRIMARY, max_lines=2)
+                            pw_inner, lh_dev, TEXT_PRIMARY, max_lines=2)
         meta_y += sect_gap
 
-    rel = (entry.get("vn_released") or "").strip()
     if rel:
         draw_label(draw, "RELEASE", lbl_font, meta_x, meta_y, TEXT_SECONDARY)
         meta_y += lbl_gap
