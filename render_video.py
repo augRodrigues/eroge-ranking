@@ -1100,12 +1100,8 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     draw.text((pcx, py0 + rh // 2), rank_str, font=fonts["rank_big"],
               fill=(*hero, 255), anchor="mm")
 
-    # Separator line
-    sep_y = py0 + rh
-    draw.line([(rx0, sep_y), (rx1, sep_y)], fill=PANEL_BORDER, width=1)
-
-    # Cover art
-    cov_top = sep_y + 10
+    # Cover art — no explicit separator line; gap provides the breathing room
+    cov_top = py0 + rh + 14
     cov_max_h = int((panel_bottom - cov_top) * 0.46)
     cov_w, cov_h = pw - 8, cov_max_h
     cx0 = pcx - cov_w // 2
