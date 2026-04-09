@@ -684,20 +684,25 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     draw.line([(bx + PANEL_RADIUS, by), (bx1 - PANEL_RADIUS, by)],
               fill=(*hero, int(255 * 0.75)), width=2)
 
-    # Type badge (OP/ED/etc) — colored accent pill
+    # Type badge (OP/ED/etc) — anchored to bar left, text centered in remaining space
     type_font = fonts["type_badge"]
     st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
     type_w = max(60, _text_width(type_font, st_abbr) + 24)
     type_h = max(34, int(bh * 0.45))
-    
-    # Text block centers exactly on the bottom bar
-    credits_cx = (bx + bx1) // 2
-    credits_max_w = max(80, (bx1 - bx) - 64 - type_w)
+
+    # Badge is ALWAYS at left edge.  Text is centred in the space to its right.
+    badge_x = bx + 16
+    badge_y = by + (bh - type_h) // 2
+    badge_right = badge_x + type_w
+    text_area_x0 = badge_right + 12          # 12px gap after badge
+    text_area_x1 = bx1 - 16                 # symmetric right margin
+    credits_cx   = (text_area_x0 + text_area_x1) // 2
+    credits_max_w = max(80, text_area_x1 - text_area_x0)
 
     song_t = entry.get("title", "")
     artists = entry.get("artists", [])
     voc = ", ".join(a["name"] for a in artists if a.get("role_id") == 1)
-    
+
     fs_title = max(18, min(36, int(850 / max(len(song_t), 12))))
     try:
         if fonts.get("lat_path") and not any(_is_cjk(c) for c in song_t):
@@ -708,7 +713,7 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
             tf = fonts["bar_title"]
     except Exception:
         tf = fonts["bar_title"]
-    
+
     fs_voc = max(14, int(fs_title * 0.75))
     try:
         if fonts.get("lat_path") and not any(_is_cjk(c) for c in voc):
@@ -720,9 +725,9 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     except Exception:
         vf = fonts["badge"]
 
-    title_clean = fit_text_width(tf, song_t, credits_max_w - (_text_width(vf, " — " + voc) if voc else 0))
+    voc_w = _text_width(vf, " — " + voc) if voc else 0
+    title_clean = fit_text_width(tf, song_t, credits_max_w - voc_w)
     tw = _text_width(tf, title_clean)
-    vw = _text_width(vf, " — " + voc) if voc else 0
     tbb = tf.getbbox(title_clean)
     title_h = tbb[3] - tbb[1]
 
@@ -736,7 +741,7 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     except Exception:
         cal_h = 20 if cal_segs else 0
 
-    # Game title below CAL
+    # Game title — always shown below CAL/title with a guaranteed gap
     game_t = (entry.get("game") or "").strip()
     game_font = fonts["game"]
     try:
@@ -744,23 +749,15 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
         game_h = (game_bb[3] - game_bb[1] + 4) if game_t else 0
     except Exception:
         game_h = 20 if game_t else 0
-    gap_cal_game = 8 if game_t and cal_segs else 0
+    gap_cal_game = max(6, int(title_h * 0.22)) if game_t else 0
 
     block_h = title_h + gap_title_cal + cal_h + gap_cal_game + game_h
     y_block_top = by + max(0, (bh - block_h) // 2)
 
-    cx_line1 = credits_cx - (tw + vw) // 2
-    
-    group_left = cx_line1
-    if cal_segs:
-        group_left = min(group_left, credits_cx - w_cal // 2)
-    if game_t:
-        game_w = _text_width(game_font, game_t)
-        group_left = min(group_left, credits_cx - game_w // 2)
-    
-    # Draw badge flanking the title text group (prevent overlap)
-    badge_x = max(bx + 16, group_left - type_w - 24)
-    badge_y = by + (bh - type_h) // 2
+    # Song title is NOW centered in the text area, not the full bar
+    cx_line1 = credits_cx - (tw + voc_w) // 2
+
+    # Draw type badge
     sf = 3
     pill = Image.new("RGBA", (type_w * sf, type_h * sf), (0, 0, 0, 0))
     pd = ImageDraw.Draw(pill)
@@ -783,10 +780,11 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     if cal_segs:
         y_cal = y_block_top + title_h + gap_title_cal
         draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
+
     if game_t:
         y_game = y_block_top + title_h + gap_title_cal + cal_h + gap_cal_game
         game_str = fit_text_width(game_font, game_t, credits_max_w)
-        draw_hcentered_line(draw, game_str, game_font, credits_cx, y_game, TEXT_PRIMARY)
+        draw_hcentered_line(draw, game_str, game_font, credits_cx, y_game, TEXT_SECONDARY)
 
     # ── Right panel: rank + participant grid ─────────────────────────────────
     rx0, rx1 = L["rx0"], L["rx1"]
@@ -801,9 +799,9 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     draw.line([(rx0 - 4, py0 + PANEL_RADIUS), (rx0 - 4, panel_bottom - PANEL_RADIUS)],
               fill=(*hero, int(255 * 0.75)), width=2)
 
-    # Rank number — pink accent
+    # Rank number — hero-coloured, slightly compact to give grid more room
     rank = entry.get("rank", 0)
-    rh = int(pw * 0.26)
+    rh = int(pw * 0.20)      # was 0.26 — saves ~6% of panel width in height
     rank_str = f"#{rank}"
     draw_glow(canvas, pcx, py0 + rh // 2, rh // 2, hero, opacity=0.15)
     draw = ImageDraw.Draw(canvas)
@@ -812,109 +810,195 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
 
     # ── Participant grid layout ───────────────────────────────────────────────
     n = len(participants_data)
+
+    # Bottom footer height: reserved for the avg score pill
+    footer_h = max(28, H // 32)
     grid_top = py0 + rh + 6
-    grid_bottom = panel_bottom - 28   # leave room for avg score at bottom
+    grid_bottom = panel_bottom - footer_h - 4
     grid_h = max(1, grid_bottom - grid_top)
     grid_w = pw - 4
 
-    # Decide columns: try 2 cols first, fall back to 1 if avatars would be too small
-    MIN_AV = max(36, H // 22)
-    for cols in (2, 1):
-        rows = math.ceil(n / cols)
-        cell_w = grid_w // cols
-        name_sz = max(10, min(H // 62, cell_w // 5))
-        name_font, _ = find_font(LATIN_FONTS, name_sz)
-        name_line_h = name_sz + 4
-        av_d = cell_w - 8   # avatar fills cell width
-        # Use 2 cols only if we have enough participants AND avatars stay readable
-        # Minimum: 5+ participants for 2 cols, or avatar would be too small
-        if av_d >= MIN_AV or cols == 1:
-            av_d = max(MIN_AV, av_d)
-            break
-
-    # Score font: bold and readable at a glance
-    score_sz = max(14, min(32, av_d // 4))
-    score_font, _ = find_font(LATIN_FONTS, score_sz)
-
-    # Cell height = name + avatar + gap
-    cell_h = name_line_h + av_d + 8
-
-    # Grid starts at top, no vertical centering
-    grid_offset = 0
-
-    print(f"    Party grid: n={n} cols={cols} rows={rows} pw={pw} av_d={av_d} cell_h={cell_h} grid_h={grid_h} offset={grid_offset}")
-
+    # ── Score pill sizing — computed before layout so cell_h includes pill space ─
     # Score extremes for coloring
     scored = [p["score"] for p in participants_data if p["score"] > 0]
     max_sc = max(scored) if scored else -1
     min_sc = min(scored) if scored else -1
 
+    # ── Column layout ─────────────────────────────────────────────────────────
+    # Strategy: find the fewest columns where rows * cell_h fits in grid_h AND
+    # av_d ≥ MIN_AV.  We try column counts in ascending order (fewer = bigger
+    # avatars) but cap at 3.  We pre-compute ring_w here so the pill can sit
+    # cleanly below the ring without any overlap.
+    MIN_AV = max(32, H // 26)
+
+    chosen = None
+    # Heuristic preferred column count based on participant count:
+    # 1-3 participants → try 1 col; 4-8 → try 2; 9+ → try 3.
+    if n <= 3:
+        col_order = (1, 2, 3)
+    elif n <= 8:
+        col_order = (2, 1, 3)
+    else:
+        col_order = (3, 2, 1)
+
+    for cols in col_order:
+        rows = math.ceil(n / cols)
+        cell_w = grid_w // cols
+        av_d_try = max(MIN_AV, cell_w - 8)
+        # Name: larger formula so labels are clearly legible (was H//62 / av_d//6)
+        name_sz = max(12, min(H // 44, av_d_try // 4))
+        name_line_h = name_sz + 6
+        score_sz = max(11, min(22, av_d_try // 4))
+        pill_h = score_sz + 10
+        ring_w_try = max(2, av_d_try // 20)
+        pill_gap = ring_w_try // 2 + ring_w_try + 2
+        cell_h = name_line_h + av_d_try + pill_gap + pill_h + 6
+        if rows * cell_h <= grid_h or cols == col_order[-1]:
+            chosen = (cols, rows, cell_w, av_d_try, name_sz, name_line_h,
+                      score_sz, pill_h, ring_w_try, pill_gap, cell_h)
+            break
+
+    (cols, rows, cell_w, av_d, name_sz, name_line_h,
+     score_sz, pill_h, ring_w, pill_gap, cell_h) = chosen
+
+    name_font, _ = find_font(LATIN_FONTS, name_sz)
+    score_font, _ = find_font(LATIN_FONTS, score_sz)
+
+    # Vertically center the grid in the available space
+    total_grid_h = rows * cell_h
+    grid_offset = max(0, (grid_h - total_grid_h) // 2)
+
+    print(f"    Party grid: n={n} cols={cols} rows={rows} pw={pw} av_d={av_d} "
+          f"cell_h={cell_h} grid_h={grid_h} pill_h={pill_h} ring_w={ring_w}")
+
     for idx_p, p in enumerate(participants_data):
         col = idx_p % cols
         row = idx_p // cols
-        # cell center x
         cx_cell = rx0 + 2 + col * cell_w + cell_w // 2
-        # cell top y — offset to vertically center the grid
         cy_cell = grid_top + grid_offset + row * cell_h
 
-        # ── Name label — sized to fit within avatar width ─────────────────
-        # ── Name label — above avatar ─────────────────────────────────────
-        name_str = p["name"]
-        while name_str and _text_width(name_font, name_str) > av_d:
-            name_str = name_str[:-1]
-        if name_str != p["name"]:
-            name_str = name_str[:-1] + "…"
+        # ── Name label — prominent identifier, not secondary metadata ───────
+        name_str = fit_text_width(name_font, p["name"], av_d)
         nw = _text_width(name_font, name_str)
         draw.text((cx_cell - nw // 2, cy_cell + 2), name_str,
-                  font=name_font, fill=(255, 255, 255, 255))
+                  font=name_font, fill=TEXT_PRIMARY)
 
         # ── Avatar circle ─────────────────────────────────────────────────
         av_cx = cx_cell
         av_cy = cy_cell + name_line_h + av_d // 2
 
-        avatar_img = _load_avatar_cached(p.get("avatar_b64", ""), av_d)
-        if avatar_img:
-            canvas.alpha_composite(avatar_img, (av_cx - av_d // 2, av_cy - av_d // 2))
-        else:
-            draw.ellipse([av_cx - av_d // 2, av_cy - av_d // 2,
-                          av_cx + av_d // 2, av_cy + av_d // 2],
-                         fill=(20, 26, 44, 255))
-            draw.text((av_cx, av_cy), "?", font=name_font,
-                      fill=(100, 110, 140, 200), anchor="mm")
-
-        # ── Score — large bold number overlapping bottom of avatar ──────────
         sc = p["score"]
-        sc_str = str(int(sc)) if sc == int(sc) and sc > 0 else (str(sc) if sc > 0 else "–")
         if sc > 0 and sc == max_sc and sc != min_sc:
-            sc_color = (*ACCENT_PINK[:3], 255)
+            ring_rgb = ACCENT_PINK[:3]
         elif sc > 0 and sc == min_sc and sc != max_sc:
-            sc_color = (*ACCENT_VIOLET[:3], 255)
+            ring_rgb = ACCENT_VIOLET[:3]
         else:
-            sc_color = (255, 255, 255, 240)
+            ring_rgb = hero
 
-        sc_y = av_cy + av_d // 2 - score_sz // 2 - 2
-        for ox, oy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, 2), (0, -2)):
-            draw.text((av_cx + ox, sc_y + oy), sc_str, font=score_font,
-                      fill=(0, 0, 0, 200), anchor="mm")
-        draw.text((av_cx, sc_y), sc_str, font=score_font, fill=sc_color, anchor="mm")
+        # ── Avatar: loaded slightly smaller than ring diameter so the circular
+        # image fits entirely inside the ring with no bleed at the edges.
+        av_inner_d = max(av_d - ring_w, ring_w + 4)   # always positive
+        avatar_img = _load_avatar_cached(p.get("avatar_b64", ""), av_inner_d)
+        if avatar_img:
+            canvas.alpha_composite(
+                avatar_img,
+                (av_cx - av_inner_d // 2, av_cy - av_inner_d // 2)
+            )
+        else:
+            # Fallback: dark circle with initial letter, inset to match ring
+            draw.ellipse(
+                [av_cx - av_inner_d // 2, av_cy - av_inner_d // 2,
+                 av_cx + av_inner_d // 2 - 1, av_cy + av_inner_d // 2 - 1],
+                fill=(20, 26, 44, 255)
+            )
+            init = (p["name"] or "?")[0].upper()
+            init_sz = max(12, av_inner_d // 3)
+            init_font, _ = find_font(LATIN_FONTS, init_sz)
+            draw.text((av_cx, av_cy), init, font=init_font,
+                      fill=(160, 170, 200, 220), anchor="mm")
 
-    # Average score at bottom of panel — more prominent
+        # AA ring — drawn at full av_d diameter, framing the inset avatar
+        _draw_circle_ring_aa(canvas, av_cx, av_cy, av_d, (*ring_rgb, 215), ring_w)
+        draw = ImageDraw.Draw(canvas)
+
+        # ── Score pill badge — sits cleanly BELOW the ring ────────────────
+        # pill_gap was computed in layout: ring outer half-width + 2px →
+        # ensures the pill top edge never touches the ring line.
+        sc_str = (
+            str(int(sc)) if sc > 0 and sc == int(sc)
+            else (f"{sc:.1f}" if sc > 0 else "–")
+        )
+
+        if sc > 0 and sc == max_sc and sc != min_sc:
+            pill_fill   = (*ACCENT_PINK[:3], 60)
+            pill_border = (*ACCENT_PINK[:3], 230)
+            sc_color    = (255, 220, 235, 255)
+        elif sc > 0 and sc == min_sc and sc != max_sc:
+            pill_fill   = (*ACCENT_VIOLET[:3], 55)
+            pill_border = (*ACCENT_VIOLET[:3], 210)
+            sc_color    = (220, 210, 255, 255)
+        else:
+            pill_fill   = (*hero, 45)
+            pill_border = (*hero, 160)
+            sc_color    = TEXT_PRIMARY
+
+        score_w = _text_width(score_font, sc_str)
+        pill_w = score_w + max(16, pill_h)     # horizontal padding
+        pill_w = max(pill_w, int(av_d * 0.52)) # at least 52% of avatar width
+        pill_w = min(pill_w, av_d + 4)         # never wider than avatar
+
+        # Supersample pill for crisp anti-aliased corners
+        SS = 3
+        pill_img = Image.new("RGBA", (pill_w * SS, pill_h * SS), (0, 0, 0, 0))
+        pd_pill = ImageDraw.Draw(pill_img)
+        pd_pill.rounded_rectangle(
+            [0, 0, pill_w * SS - 1, pill_h * SS - 1],
+            radius=(pill_h * SS) // 2,
+            fill=pill_fill,
+            outline=pill_border,
+            width=max(2, SS),
+        )
+        pill_img = pill_img.resize((pill_w, pill_h), Image.LANCZOS)
+
+        # pill_y: avatar bottom edge + ring outer half + 2px gap
+        pill_x = av_cx - pill_w // 2
+        pill_y = av_cy + av_d // 2 + pill_gap
+        canvas.alpha_composite(pill_img, (pill_x, pill_y))
+
+        draw = ImageDraw.Draw(canvas)
+        draw.text(
+            (av_cx, pill_y + pill_h // 2),
+            sc_str,
+            font=score_font,
+            fill=sc_color,
+            anchor="mm",
+        )
+
+    # ── Average score footer — anchored below last participant's pill ──────────
+    # Clamp so it never exits the panel even if participants fill all the space.
     avg = entry.get("party_avg_score", 0)
     if avg:
-        avg_font, _ = find_font(LATIN_FONTS, max(15, H // 54))
+        # Compute where the last participant's score pill ends
+        last_row = (n - 1) // cols
+        last_cy_cell = grid_top + grid_offset + last_row * cell_h
+        last_pill_bottom = last_cy_cell + name_line_h + av_d + pill_gap + pill_h
+
+        avg_font, _ = find_font(LATIN_FONTS, max(13, H // 56))
         avg_str = f"avg  {avg:.1f}"
         aw = _text_width(avg_font, avg_str)
-        pad_x, pad_y = 10, 4
-        ax0 = pcx - aw // 2 - pad_x
-        ay0 = panel_bottom - 26
-        ax1 = pcx + aw // 2 + pad_x
-        ay1 = panel_bottom - 6
-        draw.rounded_rectangle([ax0, ay0, ax1, ay1], radius=6,
-                                fill=(*hero, 30))
-        draw.rounded_rectangle([ax0, ay0, ax1, ay1], radius=6,
-                                outline=(*hero, 80), width=1)
-        draw.text((pcx, (ay0 + ay1) // 2), avg_str, font=avg_font,
-                  fill=(*hero, 230), anchor="mm")
+        pad_x = max(14, footer_h // 2)
+        fp_w = aw + pad_x * 2
+        fp_h = footer_h - 4
+        fp_x0 = pcx - fp_w // 2
+        # Position: 10px below last pill, but never below panel
+        fp_y0_ideal = last_pill_bottom + 10
+        fp_y0 = min(fp_y0_ideal, panel_bottom - fp_h - 4)
+        draw_frosted_panel(canvas, (fp_x0, fp_y0, fp_x0 + fp_w, fp_y0 + fp_h),
+                           radius=fp_h // 2, tint=(*hero[:3], 30),
+                           border=(*hero[:3], 80))
+        draw = ImageDraw.Draw(canvas)
+        draw.text((pcx, fp_y0 + fp_h // 2), avg_str,
+                  font=avg_font, fill=(*hero, 230), anchor="mm")
 
     canvas.save(out_path, "PNG")
 
@@ -986,15 +1070,20 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     draw.line([(bx + PANEL_RADIUS, by), (bx1 - PANEL_RADIUS, by)],
               fill=(*hero, int(255 * 0.75)), width=2)
 
-    # Type badge (OP/ED/etc) — colored accent pill
+    # Type badge (OP/ED/etc) — anchored to bar left, text centered in remaining space
     type_font = fonts["type_badge"]
     st_abbr = TYPE_ABBR.get(tp_id, "OTHER")
     type_w = max(60, _text_width(type_font, st_abbr) + 24)
     type_h = max(34, int(bh * 0.45))
-    
-    # Text block centers exactly on the bottom bar
-    credits_cx = (bx + bx1) // 2
-    credits_max_w = max(80, (bx1 - bx) - 64 - type_w)
+
+    # Badge is ALWAYS at left edge. Text is centred in the space to its right.
+    badge_x = bx + 16
+    badge_y = by + (bh - type_h) // 2
+    badge_right = badge_x + type_w
+    text_area_x0 = badge_right + 12
+    text_area_x1 = bx1 - 16
+    credits_cx   = (text_area_x0 + text_area_x1) // 2
+    credits_max_w = max(80, text_area_x1 - text_area_x0)
 
     song_t = entry.get("title", "")
     artists = entry.get("artists", [])
@@ -1022,9 +1111,9 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     except Exception:
         vf = fonts["badge"]
 
-    title_clean = fit_text_width(tf, song_t, credits_max_w - (_text_width(vf, " — " + voc) if voc else 0))
+    voc_w = _text_width(vf, " — " + voc) if voc else 0
+    title_clean = fit_text_width(tf, song_t, credits_max_w - voc_w)
     tw = _text_width(tf, title_clean)
-    vw = _text_width(vf, " — " + voc) if voc else 0
     tbb = tf.getbbox(title_clean)
     title_h = tbb[3] - tbb[1]
 
@@ -1042,15 +1131,10 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     block_h = title_h + gap_title_cal + cal_h
     y_block_top = by + max(0, (bh - block_h) // 2)
 
-    cx_line1 = credits_cx - (tw + vw) // 2
-    
-    group_left = cx_line1
-    if cal_segs:
-        group_left = min(group_left, credits_cx - w_cal // 2)
-        
-    # Draw badge flanking the title text group (prevent overlap)
-    badge_x = max(bx + 16, group_left - type_w - 24)
-    badge_y = by + (bh - type_h) // 2
+    # Song title is NOW centered in the text area, not the full bar
+    cx_line1 = credits_cx - (tw + voc_w) // 2
+
+    # Draw type badge
     sf = 3
     pill = Image.new("RGBA", (type_w * sf, type_h * sf), (0, 0, 0, 0))
     pd = ImageDraw.Draw(pill)
@@ -1809,12 +1893,28 @@ def merge_party_scores(playlist_path: str, score_files: list[str]) -> dict:
 
     print(f"\n  Party merge: {len(participants)} participant(s): {', '.join(p['name'] for p in participants)}")
 
-    # Compute averages and sort descending (highest avg = rank 1)
-    def avg_score(sid):
+    # Compute averages and statistical variance per song.
+    # variance = E[X²] − (E[X])²  (population variance, not sample variance,
+    # because we have the full set of scores for this lobby).
+    def avg_score(sid: str) -> float:
         vals = score_acc[sid]
         return sum(vals) / len(vals) if vals else 0.0
 
-    sorted_ids = sorted(entry_map.keys(), key=lambda sid: (avg_score(sid), int(sid)))
+    def variance_score(sid: str) -> float:
+        vals = score_acc[sid]
+        if len(vals) < 2:
+            return 0.0
+        mu = sum(vals) / len(vals)
+        return sum((v - mu) ** 2 for v in vals) / len(vals)
+
+    # Sort ascending by (avg, -variance, song_id):
+    #   • Higher avg → higher rank (closer to rank 1)
+    #   • On tie in avg, lower variance wins (higher consensus beats polarising)
+    #   • Final tie-break: lower numeric song id wins (stable, deterministic)
+    sorted_ids = sorted(
+        entry_map.keys(),
+        key=lambda sid: (avg_score(sid), -variance_score(sid), int(sid)),
+    )
 
     total = len(sorted_ids)
 
