@@ -292,24 +292,78 @@ def _text_width(font, text):
         return bb[2] - bb[0]
 
 
-def draw_text_segments(draw, x, y, segments, font):
+def draw_text_segments(draw, x, y, segments, font, max_w=None):
     cx = x
-    for text, fill in segments:
+    limit_x = x + max_w if max_w else None
+    ell_w = _text_width(font, "…")
+    
+    for i, (text, fill) in enumerate(segments):
         if not text:
             continue
+        w = _text_width(font, text)
+        if limit_x and (cx + w > limit_x):
+            # Truncating the rest of the segments with an ellipsis
+            rem_w = limit_x - cx - ell_w
+            if rem_w > 0:
+                t = text
+                while t and _text_width(font, t) > rem_w:
+                    t = t[:-1]
+                draw.text((cx, y), t + "…", font=font, fill=fill)
+            elif cx + ell_w <= limit_x:
+                draw.text((cx, y), "…", font=font, fill=fill)
+            break
         draw.text((cx, y), text, font=font, fill=fill)
-        cx += _text_width(font, text)
+        cx += w
 
 
 def segments_width(font, segments):
     return sum(_text_width(font, t) for t, _ in segments if t)
 
 
-def draw_hcentered_line(draw, text, font, cx, y, fill):
+def draw_hcentered_line(draw, text, font, cx, y, fill, max_w=None):
     if not text:
         return
+    if max_w:
+        text = fit_text_width(font, text, max_w)
     w = _text_width(font, text)
     draw.text((cx - w // 2, y), text, font=font, fill=fill)
+
+
+def fit_title_and_artists(tf, title, vf, artists_str, max_w):
+    """
+    Fits "Title — Artist" into max_w.
+    Prioritizes Title but ensures Artist is somewhat visible if present.
+    """
+    if not artists_str:
+        return fit_text_width(tf, title, max_w), ""
+    
+    sep = " — "
+    sep_w = _text_width(vf, sep)
+    tw_full = _text_width(tf, title)
+    vw_full = _text_width(vf, artists_str)
+    
+    if tw_full + sep_w + vw_full <= max_w:
+        return title, artists_str
+    
+    # Fair-share allocation: Title gets 65%, Artist gets 35%
+    # but only if they both actually need it.
+    target_vw = max(int(max_w * 0.35), 100)
+    target_tw = max_w - sep_w - target_vw
+    
+    if tw_full <= target_tw:
+        # Title fits its allocation, give remaining to Artist
+        title_final = title
+        artist_final = fit_text_width(vf, artists_str, max_w - _text_width(tf, title_final) - sep_w)
+    elif vw_full <= target_vw:
+        # Artist fits its allocation, give remaining to Title
+        artist_final = artists_str
+        title_final = fit_text_width(tf, title, max_w - _text_width(vf, artist_final) - sep_w)
+    else:
+        # Both exceed their allocations, clamp both
+        artist_final = fit_text_width(vf, artists_str, target_vw)
+        title_final = fit_text_width(tf, title, max_w - _text_width(vf, artist_final) - sep_w)
+        
+    return title_final, artist_final
 
 
 def fit_text_width(font, text, max_w):
@@ -725,15 +779,15 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
     except Exception:
         vf = fonts["badge"]
 
-    voc_w = _text_width(vf, " — " + voc) if voc else 0
-    title_clean = fit_text_width(tf, song_t, credits_max_w - voc_w)
+    title_clean, voc_clean = fit_title_and_artists(tf, song_t, vf, voc, credits_max_w)
     tw = _text_width(tf, title_clean)
+    voc_w = _text_width(vf, " — " + voc_clean) if voc_clean else 0
     tbb = tf.getbbox(title_clean)
     title_h = tbb[3] - tbb[1]
 
     cal_font = fonts["bar_cal"]
     cal_segs = build_cal_segments(artists)
-    w_cal = segments_width(cal_font, cal_segs) if cal_segs else 0
+    w_cal = min(credits_max_w, segments_width(cal_font, cal_segs)) if cal_segs else 0
     gap_title_cal = max(10, int(title_h * 0.38)) if cal_segs else 0
     try:
         cal_bb = cal_font.getbbox("Ag")
@@ -772,14 +826,14 @@ def render_overlay_party(entry, cover_img, fonts, W, H, out_path, has_video_wind
               font=type_font, fill=type_color, anchor="mm")
 
     draw.text((cx_line1, y_block_top), title_clean, font=tf, fill=(255, 255, 255, 255))
-    if voc:
-        vbb = vf.getbbox(" — " + voc)
+    if voc_clean:
+        vbb = vf.getbbox(" — " + voc_clean)
         y_voc = y_block_top + (tbb[1] + tbb[3] - vbb[1] - vbb[3]) / 2
-        draw.text((cx_line1 + tw, y_voc), " — " + voc, font=vf, fill=(180, 188, 200, 255))
+        draw.text((cx_line1 + tw, y_voc), " — " + voc_clean, font=vf, fill=(180, 188, 200, 255))
 
     if cal_segs:
         y_cal = y_block_top + title_h + gap_title_cal
-        draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
+        draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font, max_w=credits_max_w)
 
     if game_t:
         y_game = y_block_top + title_h + gap_title_cal + cal_h + gap_cal_game
@@ -1111,15 +1165,15 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
     except Exception:
         vf = fonts["badge"]
 
-    voc_w = _text_width(vf, " — " + voc) if voc else 0
-    title_clean = fit_text_width(tf, song_t, credits_max_w - voc_w)
+    title_clean, voc_clean = fit_title_and_artists(tf, song_t, vf, voc, credits_max_w)
     tw = _text_width(tf, title_clean)
+    voc_w = _text_width(vf, " — " + voc_clean) if voc_clean else 0
     tbb = tf.getbbox(title_clean)
     title_h = tbb[3] - tbb[1]
 
     cal_font = fonts["bar_cal"]
     cal_segs = build_cal_segments(artists)
-    w_cal = segments_width(cal_font, cal_segs) if cal_segs else 0
+    w_cal = min(credits_max_w, segments_width(cal_font, cal_segs)) if cal_segs else 0
     gap_title_cal = max(10, int(title_h * 0.38)) if cal_segs else 0
     try:
         cal_bb = cal_font.getbbox("Ag")
@@ -1149,14 +1203,14 @@ def render_overlay(entry, cover_img, fonts, W, H, out_path, has_video_window, pa
               font=type_font, fill=type_color, anchor="mm")
 
     draw.text((cx_line1, y_block_top), title_clean, font=tf, fill=(255, 255, 255, 255))
-    if voc:
-        vbb = vf.getbbox(" — " + voc)
+    if voc_clean:
+        vbb = vf.getbbox(" — " + voc_clean)
         y_voc = y_block_top + (tbb[1] + tbb[3] - vbb[1] - vbb[3]) / 2
-        draw.text((cx_line1 + tw, y_voc), " — " + voc, font=vf, fill=(180, 188, 200, 255))
+        draw.text((cx_line1 + tw, y_voc), " — " + voc_clean, font=vf, fill=(180, 188, 200, 255))
 
     if cal_segs:
         y_cal = y_block_top + title_h + gap_title_cal
-        draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font)
+        draw_text_segments(draw, credits_cx - w_cal // 2, y_cal, cal_segs, cal_font, max_w=credits_max_w)
 
     # ── Right sidebar — glass panel ───────────────────────────────────────────
     rx0, rx1 = L["rx0"], L["rx1"]
