@@ -23,6 +23,15 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:var(--san
   font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
 button{font-family:inherit;cursor:pointer;border:none;outline:none;background:none}
 input,select{font-family:inherit;background:none;border:none;color:var(--tx);outline:none}
+/* Hide number input spinners */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
 ::-webkit-scrollbar{width:5px}
 ::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:3px}
 
@@ -318,11 +327,11 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
     </div>
     <div class="gbar" id="gbar">
       <label>Default clip</label>
-      <input type="number" class="gi" id="gdur" min="5" max="9999" value="30"> s
+      <input type="text" class="gi" id="gdur" value="0:30"> s
       <button class="apb" id="apdur">Apply to all</button>
       <span style="color:var(--mu2);font-size:11px">&middot;</span>
       <label>Start at</label>
-      <input type="number" class="gi" id="gstart" min="0" max="99999" value="0"> s
+      <input type="text" class="gi" id="gstart" value="0:00"> s
       <button class="apb" id="apstart">Apply to all</button>
       <span class="gcnt" id="gcnt">0</span>
     </div>
@@ -541,7 +550,7 @@ function addSong(s){
     selectedLinkIndex = s.links.findIndex(l => l.url === s.au);
     if(selectedLinkIndex === -1) selectedLinkIndex = 0;
   }
-  ranking.push({s,dur:Math.max(5,parseInt($('gdur').value)||30),st:Math.max(0,parseInt($('gstart').value)||0),lp:'',selectedLinkIndex});
+  ranking.push({s,dur:Math.max(5,parseTime($('gdur').value)||30),st:Math.max(0,parseTime($('gstart').value)||0),lp:'',selectedLinkIndex});
   save();render();
 }
 function del(i){ranking.splice(i,1);save();render();}
@@ -556,6 +565,35 @@ function restore(){
 function saveFile(){
   const bl=new Blob([JSON.stringify({ranking:ranking.map((r,i)=>({rank:i+1,id:r.s.id,t:r.s.t,gt:r.s.gt,st:r.s.st,dur:r.dur,start:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex}))},null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='emq-ranking.json';a.click();URL.revokeObjectURL(a.href);
+}
+
+// Helper to parse MM:SS or seconds string into total seconds
+function parseTime(v) {
+  if (!v) return 0;
+  const s = String(v).trim();
+  if (s.includes(':')) {
+    const parts = s.split(':');
+    let minutes = 0;
+    let seconds = 0;
+    if (parts.length === 2) {
+      minutes = parseInt(parts[0]) || 0;
+      seconds = parseInt(parts[1]) || 0;
+    } else if (parts.length === 3) {
+      minutes = parseInt(parts[0]) || 0;
+      seconds = parseInt(parts[1]) || 0;
+    }
+    return Math.max(0, minutes * 60 + seconds);
+  } else {
+    return Math.max(0, parseInt(s) || 0);
+  }
+}
+
+// Helper to format seconds into MM:SS
+function formatTime(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  const m = Math.floor(s / 60);
+  const secs = s % 60;
+  return `${m}:${secs.toString().padStart(2, '0')}`;
 }
 
 // Render cards
@@ -602,7 +640,7 @@ function render(){
     if(hasLinks && links[selectedLinkIndex]){
       playUrl = links[selectedLinkIndex].url;
     }
-    const playHtml=partyMode&&playUrl?
+    const playHtml=playUrl?
       '<a class="cplay" href="'+esc(playUrl)+'" target="_blank" rel="noopener">&#9654; Play</a>'
       :'';
 
@@ -630,9 +668,9 @@ function render(){
         +(partyMode?''
           :'<div class="car">'+[vc&&'Vocals: '+vc,co&&'Music: '+co].filter(Boolean).join(' · ')+'</div>'
           +'<div class="ccl"><span class="cll">Clip</span>'
-            +'<input class="cin" type="number" min="5" max="9999" value="'+dur+'" data-f="d" data-i="'+i+'"> s'
+            +'<input class="cin" type="text" value="'+formatTime(dur)+'" data-f="d" data-i="'+i+'"> s'
             +'<span class="csep">·</span><span class="cll">Start</span>'
-            +'<input class="cin" type="number" min="0" max="99999" value="'+st+'" data-f="s" data-i="'+i+'"> s'
+            +'<input class="cin" type="text" value="'+formatTime(st)+'" data-f="s" data-i="'+i+'"> s'
           +'</div>'
           +'<div class="ccl" style="margin-top:6px;"><span class="cll">Link</span>'
             +(hasLinks 
@@ -654,8 +692,6 @@ function render(){
       +'</div>'
       +(partyMode?''
         :'<div class="cc"><div class="cbtns">'
-          +'<button class="ib" data-up="'+i+'">↑</button>'
-          +'<button class="ib" data-dn="'+i+'">↓</button>'
           +'<button class="ib del" data-rm="'+i+'">×</button>'
         +'</div></div>'
       );
@@ -688,9 +724,7 @@ function render(){
         }
         return;
       }
-      const up=e.target.closest('[data-up]'),dn=e.target.closest('[data-dn]'),rm=e.target.closest('[data-rm]'),clr=e.target.closest('[data-clr]');
-      if(up)mv(+up.dataset.up,+up.dataset.up-1);
-      if(dn)mv(+dn.dataset.dn,+dn.dataset.dn+1);
+      const rm=e.target.closest('[data-rm]'),clr=e.target.closest('[data-clr]');
       if(rm)del(+rm.dataset.rm);
       if(clr){const ix=+clr.dataset.clr;ranking[ix].lp='';save();render();}
     });
@@ -698,8 +732,8 @@ function render(){
       if(partyMode)return;
       const inp=e.target;if(!inp.dataset.i)return;
       const i=+inp.dataset.i,v=inp.value;
-      if(inp.dataset.f==='d')ranking[i].dur=Math.max(5,parseInt(v)||5);
-      else if(inp.dataset.f==='s')ranking[i].st=Math.max(0,parseInt(v)||0);
+      if(inp.dataset.f==='d')ranking[i].dur=Math.max(5,parseTime(v)||5);
+      else if(inp.dataset.f==='s')ranking[i].st=Math.max(0,parseTime(v)||0);
       else if(inp.dataset.f==='link')ranking[i].selectedLinkIndex = parseInt(v)||0;
       else if(inp.dataset.f==='file'){
         const f=inp.files&&inp.files[0];
@@ -708,6 +742,8 @@ function render(){
         save();render();return;
       }
       save();if(inp.dataset.f!=='file')$('bdur').textContent=fmtd(tsec());
+      // Re-render to show formatted time
+      render();
     });
   }
 }
@@ -897,8 +933,8 @@ sb.addEventListener('keydown',e=>{
 });
 document.addEventListener('click',e=>{if(!$('swrap').contains(e.target))sd.classList.remove('open');});
 
-$('apdur').addEventListener('click',()=>{const d=Math.max(5,parseInt($('gdur').value)||30);ranking.forEach(r=>r.dur=d);save();render();toast('Set all clips to '+d+'s');});
-$('apstart').addEventListener('click',()=>{const s=Math.max(0,parseInt($('gstart').value)||0);ranking.forEach(r=>r.st=s);save();render();toast('Set all start offsets to '+s+'s');});
+$('apdur').addEventListener('click',()=>{const d=Math.max(5,parseTime($('gdur').value)||30);$('gdur').value=formatTime(d);ranking.forEach(r=>r.dur=d);save();render();toast('Set all clips to '+d+'s');});
+$('apstart').addEventListener('click',()=>{const s=Math.max(0,parseTime($('gstart').value)||0);$('gstart').value=formatTime(s);ranking.forEach(r=>r.st=s);save();render();toast('Set all start offsets to '+s+'s');});
 $('hsave').addEventListener('click',saveFile);$('bsave').addEventListener('click',saveFile);
 $('hload').addEventListener('click',()=>$('lrf').click());
 $('lrf').addEventListener('change',async e=>{if(!e.target.files[0])return;loadFile(await rft(e.target.files[0]));e.target.value='';});

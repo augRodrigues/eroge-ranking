@@ -1623,12 +1623,168 @@ def file_has_audio(path: Path) -> bool:
         return False
 
 
+def file_has_video(path: Path) -> bool:
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return "video" in (r.stdout or "").lower()
+    except Exception:
+        return False
+
+
+def get_media_duration(path: Path) -> float:
+    """Get the duration of a media file in seconds using ffprobe."""
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
+
+
 def ffmpeg(args, verbose):
     cmd = ["ffmpeg", "-nostdin", "-hide_banner"] + ([] if verbose else ["-loglevel", "error"]) + args
     r = subprocess.run(cmd, capture_output=not verbose)
     if r.returncode != 0 and not verbose:
         print(f"\n  FFmpeg error:\n{r.stderr.decode(errors='replace')}")
     return r.returncode == 0
+
+
+def parse_ffmpeg_time(s: str) -> float:
+    """Parse FFmpeg's time string like '00:00:05.12' into total seconds."""
+    try:
+        parts = s.split(':')
+        if len(parts) == 3:
+            h, m, s_ms = parts
+            s_ms_parts = s_ms.split('.')
+            s_part = s_ms_parts[0]
+            ms_part = s_ms_parts[1] if len(s_ms_parts) > 1 else '0'
+            total = float(h)*3600 + float(m)*60 + float(s_part) + float(ms_part)/100
+            return total
+    except:
+        pass
+    return 0.0
+
+
+def run_ffmpeg_with_progress(cmd: list[str], total_duration: float, verbose: bool) -> bool:
+    """Run FFmpeg with a progress bar, parsing stderr for time info."""
+    import sys
+    from datetime import timedelta
+
+    # Modify FFmpeg args to show time info
+    # Ensure we have -loglevel info to get time updates
+    new_cmd = []
+    has_y = False
+    has_loglevel = False
+    has_nostdin = False
+    for part in cmd:
+        if part == "-y":
+            has_y = True
+        elif part == "-loglevel":
+            has_loglevel = True
+        elif part == "-nostdin":
+            has_nostdin = True
+    # Build the final command
+    final_cmd = ["ffmpeg"]
+    if not has_nostdin:
+        final_cmd.append("-nostdin")
+    if not has_loglevel and not verbose:
+        final_cmd.extend(["-loglevel", "info"])
+    if not has_y:
+        final_cmd.append("-y")
+    # Add the rest of the original args, skipping any leading "ffmpeg"
+    original_rest = cmd[1:] if cmd[0] == "ffmpeg" else cmd
+    final_cmd.extend(original_rest)
+    
+    # Use stderr to capture time info
+    process = subprocess.Popen(
+        final_cmd,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
+    
+    last_print_len = 0
+    current_time = 0.0
+    
+    def clear_line():
+        nonlocal last_print_len
+        if last_print_len > 0:
+            sys.stdout.write('\r' + ' ' * last_print_len + '\r')
+            last_print_len = 0
+
+    try:
+        # Read from stderr
+        while True:
+            line = process.stderr.readline()
+            if not line:
+                break
+            # Look for time=HH:MM:SS.ss
+            if 'time=' in line:
+                time_part = line.split('time=')[-1].split()[0].strip()
+                current_time = parse_ffmpeg_time(time_part)
+                if total_duration > 0:
+                    progress = min(100, (current_time / total_duration) * 100)
+                    bar_len = 40
+                    filled_len = int(round(bar_len * progress / 100))
+                    bar = '=' * filled_len + '-' * (bar_len - filled_len)
+                    td_current = str(timedelta(seconds=int(current_time)))
+                    td_total = str(timedelta(seconds=int(total_duration)))
+                    msg = f"\r  [{bar}] {progress:.1f}% ({td_current}/{td_total})"
+                    clear_line()
+                    sys.stdout.write(msg)
+                    last_print_len = len(msg)
+                    sys.stdout.flush()
+            elif verbose:
+                print(line, end='')
+        
+        process.wait()
+        
+        # Print final 100%
+        if total_duration > 0:
+            td_total = str(timedelta(seconds=int(total_duration)))
+            bar = '=' * 40
+            msg = f"\r  [{bar}] 100.0% ({td_total}/{td_total})"
+            clear_line()
+            sys.stdout.write(msg + '\n')
+        
+        return process.returncode == 0
+    except Exception as e:
+        print(f"\n  Error: {e}")
+        import traceback
+        traceback.print_exc()
+        process.kill()
+        return False
 
 
 def check_ffmpeg():
@@ -1841,7 +1997,15 @@ def concat_cuts(clips, filelist, out, verbose):
     with open(filelist, "w") as f:
         for p in clips:
             f.write(f"file '{os.path.abspath(p)}'\n")
-    return ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", out], verbose)
+    # Calculate total duration
+    total_duration = 0.0
+    for clip_path in clips:
+        dur = get_media_duration(Path(clip_path))
+        if dur > 0:
+            total_duration += dur
+    # Build FFmpeg command
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", filelist, "-c", "copy", out]
+    return run_ffmpeg_with_progress(cmd, total_duration, verbose)
 
 
 def concat_xfade(clips, durations, trans, out, verbose):
@@ -1862,32 +2026,18 @@ def concat_xfade(clips, durations, trans, out, verbose):
         )
         parts.append(f"[{fa}][{na}]acrossfade=d={trans:.3f}[{ta}]")
         fv, fa = tv, ta
-    return ffmpeg(
-        [
-            "-y",
-            *inputs,
-            "-filter_complex",
-            ";".join(parts),
-            "-map",
-            f"[{fv}]",
-            "-map",
-            f"[{fa}]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "24",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            out,
-        ],
-        verbose,
-    )
+    # Calculate total duration: sum of all durations minus (number of transitions * transition time)
+    total_duration = sum(durations) - (len(durations)-1)*trans
+    cmd = ["ffmpeg", "-y"] + inputs + [
+        "-filter_complex", ";".join(parts),
+        "-map", f"[{fv}]",
+        "-map", f"[{fa}]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "24",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        out
+    ]
+    return run_ffmpeg_with_progress(cmd, total_duration, verbose)
 
 
 def default_playlist_path():
@@ -2221,7 +2371,11 @@ def main():
             logs.append(f"    Media:  ✗ not available")
 
         overlay_path = str(frames / f"{rank:04d}.png")
-        is_video = media_path and media_kind(media_path) == "video"
+        # Check if media file actually has a video stream (not just extension)
+        is_video = False
+        if media_path:
+            if media_kind(media_path) == "video":
+                is_video = file_has_video(media_path)
         party_pd = entry.get("party_participants_data") or None
         hero_rgb = sample_dominant_color(cover_img)
 
