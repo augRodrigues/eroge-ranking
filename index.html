@@ -535,20 +535,26 @@ function renderDD(res){
 // Ranking
 function addSong(s){
   if(ranking.some(r=>String(r.s.id)===String(s.id))){toast('Already in ranking');return;}
-  ranking.push({s,dur:Math.max(5,parseInt($('gdur').value)||30),st:Math.max(0,parseInt($('gstart').value)||0),lp:''});
+  // Find index of default link (the au one)
+  let selectedLinkIndex = 0;
+  if(s.links && s.au){
+    selectedLinkIndex = s.links.findIndex(l => l.url === s.au);
+    if(selectedLinkIndex === -1) selectedLinkIndex = 0;
+  }
+  ranking.push({s,dur:Math.max(5,parseInt($('gdur').value)||30),st:Math.max(0,parseInt($('gstart').value)||0),lp:'',selectedLinkIndex});
   save();render();
 }
 function del(i){ranking.splice(i,1);save();render();}
 function mv(f,t){if(t<0||t>=ranking.length)return;const[x]=ranking.splice(f,1);ranking.splice(t,0,x);save();render();}
-function save(){try{sessionStorage.setItem('emq-r',JSON.stringify(ranking.map(r=>({id:r.s.id,d:r.dur,s:r.st,lp:r.lp}))));}catch{}}
+function save(){try{sessionStorage.setItem('emq-r',JSON.stringify(ranking.map(r=>({id:r.s.id,d:r.dur,s:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex}))));}catch{}}
 function restore(){
   try{
     const sv=JSON.parse(sessionStorage.getItem('emq-r')||'[]');ranking=[];
-    for(const x of sv){const s=idx?.get(String(x.id));if(s)ranking.push({s,dur:x.d||30,st:x.s||0,lp:x.lp||''});}
+    for(const x of sv){const s=idx?.get(String(x.id));if(s)ranking.push({s,dur:x.d||30,st:x.s||0,lp:x.lp||'',selectedLinkIndex:x.selectedLinkIndex||0});}
   }catch{}
 }
 function saveFile(){
-  const bl=new Blob([JSON.stringify({ranking:ranking.map((r,i)=>({rank:i+1,id:r.s.id,t:r.s.t,gt:r.s.gt,st:r.s.st,dur:r.dur,start:r.st,lp:r.lp}))},null,2)],{type:'application/json'});
+  const bl=new Blob([JSON.stringify({ranking:ranking.map((r,i)=>({rank:i+1,id:r.s.id,t:r.s.t,gt:r.s.gt,st:r.s.st,dur:r.dur,start:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex}))},null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='emq-ranking.json';a.click();URL.revokeObjectURL(a.href);
 }
 
@@ -567,7 +573,7 @@ function render(){
   if(!n){list.innerHTML='<div class="empty"><span class="ei">&#9836;</span>'+(partyMode?'No songs in this party template.':'Search for songs or paste an EMQ URL to start.')+'</div>';return;}
   let ds=null;list.innerHTML='';
   ranking.forEach((entry,i)=>{
-    const{s,dur,st,lp}=entry,tp=s.st||0,rk=i+1;
+    const{s,dur,st,lp,selectedLinkIndex}=entry,tp=s.st||0,rk=i+1;
     const vc=(s.ar||[]).filter(a=>a.r===1).map(a=>a.n).join(', ');
     const co=(s.ar||[]).filter(a=>a.r===2).map(a=>a.n).join(', ');
     const sid=String(s.id);
@@ -575,6 +581,10 @@ function render(){
     const c=document.createElement('div');
     c.className='card'+(partyMode?' party'+(score?' scored':''):'');
     if(!partyMode){c.draggable=true;}
+
+    // Get current selected link
+    const links = s.links || [];
+    const hasLinks = links.length > 0;
 
     // Score stars HTML
     const starsHtml=partyMode?
@@ -587,10 +597,26 @@ function render(){
       +'</div>'
       :'';
 
-    // Play link (EMQ audio URL)
-    const playHtml=partyMode&&s.au?
-      '<a class="cplay" href="'+esc(s.au)+'" target="_blank" rel="noopener">&#9654; Play</a>'
+    // Play link (EMQ audio URL) - use selected link or s.au
+    let playUrl = s.au;
+    if(hasLinks && links[selectedLinkIndex]){
+      playUrl = links[selectedLinkIndex].url;
+    }
+    const playHtml=partyMode&&playUrl?
+      '<a class="cplay" href="'+esc(playUrl)+'" target="_blank" rel="noopener">&#9654; Play</a>'
       :'';
+
+    // Build link options for dropdown
+    let linkOptionsHtml = '';
+    if(hasLinks){
+      linkOptionsHtml = links.map((l, idx) => {
+        const typeLabel = l.is_video ? 'Video' : 'Audio';
+        const durationLabel = l.duration || '';
+        return `<option value="${idx}" ${idx === selectedLinkIndex ? 'selected' : ''}>
+          ${typeLabel} ${durationLabel}${l.submitted_by ? ' by ' + l.submitted_by : ''}
+        </option>`;
+      }).join('');
+    }
 
     c.innerHTML=
       '<div class="crk '+(rk<=3&&!partyMode?'top':'')+'">'+rk+'</div>'
@@ -608,13 +634,20 @@ function render(){
             +'<span class="csep">·</span><span class="cll">Start</span>'
             +'<input class="cin" type="number" min="0" max="99999" value="'+st+'" data-f="s" data-i="'+i+'"> s'
           +'</div>'
+          +'<div class="ccl" style="margin-top:6px;"><span class="cll">Link</span>'
+            +(hasLinks 
+              ? `<select class="cin" style="min-width:200px;" data-f="link" data-i="${i}">
+                  ${linkOptionsHtml}
+                </select>` 
+              : '<span style="color:var(--mu2);">No links available</span>')
+          +'</div>'
           +'<div class="clf"><span class="clfl">Local file <span style="color:var(--mu2);font-weight:400">(optional)</span>:</span><div class="clfp">'
             +'<label class="clfbtn">Browse<input type="file" accept="video/*,audio/*,.webm,.mkv,.avi,.mov,.opus,.flac" data-f="file" data-i="'+i+'"></label>'
             +'<span class="clfn" title="'+esc(lp||'')+'">'+(lp?esc(lp):'<span style="color:var(--mu2)">No file selected</span>')+'</span>'
             +(lp?'<span class="clfx" data-clr="'+i+'">Clear</span>':'')
           +'</div></div>'
           +'<div class="cm" style="margin-top:3px">'
-            +(s.au?'<span class="aok">EMQ audio URL in DB</span>':'<span class="amiss">No DB audio URL</span>')
+            +(playUrl?'<span class="aok">EMQ URL available</span>':'<span class="amiss">No EMQ URL</span>')
           +'</div>'
         )
         +starsHtml
@@ -655,11 +688,11 @@ function render(){
         }
         return;
       }
-      const up=e.target.closest('[data-up]'),dn=e.target.closest('[data-dn]'),rm=e.target.closest('[data-rm]'),cl=e.target.closest('[data-clr]');
+      const up=e.target.closest('[data-up]'),dn=e.target.closest('[data-dn]'),rm=e.target.closest('[data-rm]'),clr=e.target.closest('[data-clr]');
       if(up)mv(+up.dataset.up,+up.dataset.up-1);
       if(dn)mv(+dn.dataset.dn,+dn.dataset.dn+1);
       if(rm)del(+rm.dataset.rm);
-      if(cl){const ix=+cl.dataset.clr;ranking[ix].lp='';save();render();}
+      if(clr){const ix=+clr.dataset.clr;ranking[ix].lp='';save();render();}
     });
     list.addEventListener('change',e=>{
       if(partyMode)return;
@@ -667,6 +700,7 @@ function render(){
       const i=+inp.dataset.i,v=inp.value;
       if(inp.dataset.f==='d')ranking[i].dur=Math.max(5,parseInt(v)||5);
       else if(inp.dataset.f==='s')ranking[i].st=Math.max(0,parseInt(v)||0);
+      else if(inp.dataset.f==='link')ranking[i].selectedLinkIndex = parseInt(v)||0;
       else if(inp.dataset.f==='file'){
         const f=inp.files&&inp.files[0];
         ranking[i].lp=f?f.name:'';
@@ -751,7 +785,7 @@ async function doExport(){
       const i = head++;
       active++;
       
-      const {s, dur, st, lp} = ordered[i];
+      const {s, dur, st, lp, selectedLinkIndex} = ordered[i];
       const origRank=ranking.indexOf(ordered[i])+1;
       
       $('xbar').style.width=(head/ordered.length*100).toFixed(1)+'%';
@@ -778,10 +812,18 @@ async function doExport(){
   });
   
   for(let i=0;i<ordered.length;i++){
-    const {s, dur, st, lp} = ordered[i];
+    const {s, dur, st, lp, selectedLinkIndex} = ordered[i];
     const origRank=ranking.indexOf(ordered[i])+1;
     const vn = ordered[i].vnCache;
     const artists=(s.ar||[]).map(a=>({name:a.n,name_jp:a.nj||'',role_id:a.r,role:RL[a.r]||('Role '+a.r)}));
+    
+    // Get selected link
+    const links = s.links || [];
+    let audioUrl = s.au || null;
+    if(links[selectedLinkIndex]){
+      audioUrl = links[selectedLinkIndex].url;
+    }
+    
     entries.push({
       rank:origRank,video_rank:i+1,
       id:String(s.id),title:s.t||'',title_jp:s.tj||'',
@@ -791,9 +833,10 @@ async function doExport(){
       vn_romaji:vn?.vn_romaji||'',vn_title_jp:vn?.vn_title_jp||'',
       vn_developers:vn?.vn_developers||'',vn_released:vn?.vn_released||'',
       local_file:lp||null,
-      audio_url:s.au||null,
+      audio_url:audioUrl,
       duration:dur,start_time:st,
       artists,
+      selected_link_index:selectedLinkIndex,
     });
   }
 
@@ -939,7 +982,12 @@ function loadFile(txt){
     if(d.type==='party_template'){
       const list=d.songs||[];let miss=0;
       ranking=list.map(x=>{const s=idx?.get(String(x.id));if(!s){miss++;return null;}
-        return{s,dur:30,st:0,lp:''};}).filter(Boolean);
+        let selectedLinkIndex =0;
+        if(s.links && s.au){
+          selectedLinkIndex = s.links.findIndex(l => l.url === s.au);
+          if(selectedLinkIndex === -1) selectedLinkIndex=0;
+        }
+        return{s,dur:30,st:0,lp:'',selectedLinkIndex};}).filter(Boolean);
       if(miss)toast(miss+' song(s) not in DB',true);
       partyScores.clear();save();
       $('pmbg').classList.add('open');$('pm-name').value='';
@@ -950,7 +998,7 @@ function loadFile(txt){
     }
     const it=d.ranking||d;let miss=0;
     ranking=it.map(x=>{const s=idx?.get(String(x.id||x.song_id));if(!s){miss++;return null;}
-      return{s,dur:x.duration||x.dur||x.d||30,st:x.startTime||x.start||x.st||x.s||0,lp:x.localPath||x.local_file||x.lp||''};}).filter(Boolean);
+      return{s,dur:x.duration||x.dur||x.d||30,st:x.startTime||x.start||x.st||x.s||0,lp:x.localPath||x.local_file||x.lp||'',selectedLinkIndex:x.selectedLinkIndex||0};}).filter(Boolean);
     if(miss)toast(miss+' song(s) not found',true);
     save();render();
   }catch{toast('Invalid JSON',true);}

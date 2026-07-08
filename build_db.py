@@ -447,9 +447,9 @@ def build_db(dump_path: Path, verbose: bool):
         print("\nERROR: music_title has no main-title rows. Cannot build db.json.")
         sys.exit(1)
 
-    # ── Join song records with best media selection ───────────────────────────
+    # ── Join song records with all media links ───────────────────────────
     print(f"\n  Joining {len(title_rows):,} song records…")
-    print("  Media selection priority: shortest video > shortest audio > any other")
+    print("  Saving all media links (videos and audios).")
     
     songs: list[dict] = []
     seen_ids: set[str] = set()
@@ -466,14 +466,14 @@ def build_db(dump_path: Path, verbose: bool):
         src_t = src_title_idx.get(sid, {}) if sid else {}
         vndb_id = src_vndb_idx.get(sid) if sid else None
         
-        # Select best media link
+        # Collect all media links
+        all_media = media_links.get(mid, [])
+        # For backward compatibility, keep selecting the best media for au/ad
         best_media = None
-        links = media_links.get(mid, [])
-        
-        if links:
+        if all_media:
             # Separate by type
-            videos = [l for l in links if l["is_video"]]
-            audios = [l for l in links if not l["is_video"] and l["type"] == 2]
+            videos = [l for l in all_media if l["is_video"]]
+            audios = [l for l in all_media if not l["is_video"] and l["type"] == 2]
             
             # Priority 1: Shortest video
             if videos:
@@ -491,8 +491,8 @@ def build_db(dump_path: Path, verbose: bool):
             
             # Priority 3: Any other link
             else:
-                links.sort(key=lambda x: x["duration"])
-                best_media = links[0]
+                all_media.sort(key=lambda x: x["duration"])
+                best_media = all_media[0]
                 if verbose:
                     print(f"    Song {mid}: selected other media ({best_media['duration_str']})")
 
@@ -524,16 +524,30 @@ def build_db(dump_path: Path, verbose: bool):
             "ar": artists,
         }
         
-        # Add best media if found
+        # Add best media for backward compatibility
         if best_media:
             song["au"] = best_media["url"]
             song["ad"] = best_media["duration_str"]
             # Also track if it's video for debugging
             if best_media["is_video"]:
                 song["is_video"] = True
+        
+        # Add all media links
+        if all_media:
+            song["links"] = []
+            for i, link in enumerate(all_media):
+                song["links"].append({
+                    "url": link["url"],
+                    "type": link["type"],
+                    "is_video": link["is_video"],
+                    "duration": link["duration_str"],
+                    "duration_sec": link["duration"],
+                    "submitted_by": link.get("submitted_by", ""),
+                    "index": i
+                })
 
         # Strip empty/null optional fields to save space
-        for k in ("tj", "gtj", "vid", "au", "ad"):
+        for k in ("tj", "gtj", "vid", "au", "ad", "links"):
             if not song.get(k):
                 song.pop(k, None)
         if not song.get("ar"):

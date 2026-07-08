@@ -1,73 +1,89 @@
 # EMQ Ranking Builder
 
-Browser app to build an [ErogeMusicQuiz](https://erogemusicquiz.com/) ranking and export `playlist.json`, plus a Python/FFmpeg renderer that composites media into a single ranking video.
+Build a ranking of songs from [ErogeMusicQuiz](https://erogemusicquiz.com/) and render it into a video!
 
-## Files
+## What you need
+- Python 3
+- FFmpeg
+- Pillow & requests (`pip install Pillow requests`)
 
-| File | Purpose |
-|------|---------|
-| `index.html` | Search DB, order songs, export playlist |
-| `db.json` | Song database (from `build_db.py`) |
-| `build_db.py` | Parse EMQ pg_dump → `db.json` |
-| `render_video.py` | Read `playlist.json`, render HUD overlay, encode with FFmpeg |
+---
 
-## Workflow
+## Quick Start
+1. **(Optional) Build/update the song database**
+   - Skip this step if you already have an updated `db.json`.
+   - To update:
+     ```bash
+     python build_db.py
+     ```
+     This will try to auto-download today's database and create `db.json`
+   - If auto-download fails:
+     1. Manually download the dump from https://dl.erogemusicquiz.com/dump/song/
+     2. Extract it
+     3. Run:
+        ```bash
+        python build_db.py /path/to/extracted/dump.txt
+        ```
 
-1. **Database** — Run `build_db.py` (auto-downloads today's dump if no file is given), place `db.json` next to `index.html`.
+2. **Make your ranking**
+   Open `index.html` in your browser:
+   - Search for songs and add them to your ranking
+   - Drag to reorder
+   - Set clip length and start time for each song
+   - Use the new dropdown to choose which song link to use (video or audio)
 
-```bash
-python build_db.py              # auto-download
-python build_db.py dump.txt     # use local dump
-```
+3. **Export your playlist**
+   Click **Export playlist** → it will download `playlist.json`
 
-2. **Ranking** — Open `index.html`, search for songs, drag to reorder, set clip length and start time per entry. Attaching a local media file is optional — the renderer downloads files automatically from erogemusicquiz.com using session cookies.
+4. **Set up cookies (for downloading media)**
+   - Open erogemusicquiz.com in your browser and log in
+   - Press F12 → Go to **Application/Storage** tab → **Cookies**
+   - Find `session-token` and `user-id` cookies for erogemusicquiz.com
+   - Open `cookies_rename.json` and replace the placeholder values with your actual cookie values
+   - Rename the file to `cookies.json`
+   - Place `cookies.json` next to `render_video.py`
 
-3. **Export** — Click **Export playlist**. The app fetches VN cover, romanized/Japanese title, developers, and release date from the VNDB API, then downloads `playlist.json`.
+5. **Render the video!**
+   ```bash
+   python render_video.py playlist.json
+   ```
+   This will download media, render the video, and save it to `ranking.mp4`.
 
-4. **Render** — Place `cookies.json` (exported from your browser for erogemusicquiz.com) next to `render_video.py`, then run:
-
-```bash
-pip install Pillow requests   # once
-python render_video.py playlist.json
-python render_video.py playlist.json --out my_ranking.mp4 --crf 18 --preset slow
-```
-
-Downloaded media is cached in `media/` and never deleted. Re-runs skip already-rendered clips unless `--force-render` is passed.
-
-## Video Overlay
-
-The rendered overlay uses a glassmorphism aesthetic:
-- `#121212` dark base with blurred cover art background
-- Frosted glass panels (credits bar + sidebar) with hero-color dynamic tinting
-- Hero color is sampled from each clip's cover art; falls back to violet `#8B5CF6` for dark/grey art
-- Sidebar shows rank number, VN cover art, `<<TITLE>>` / `<<DEVELOPER>>` / `<<RELEASE DATE>>`
-- Credits bar shows song title, vocalist, and C/A/L composer credits
+---
 
 ## Party Rank
+Have multiple people score the same songs?
+1. **Host:** Build your song list → click **★ Party** → **Export template** → share `party_template.json`
+2. **Participants:** Load the template, add your name/avatar, score each song 1–10, then export your `scores_Name.json`
+3. **Host:** Render the combined ranking
+   ```bash
+   python render_video.py party_template.json --scores alice.json bob.json charlie.json
+   ```
 
-Multiple people can score the same song list and the host renders a combined ranking.
+---
 
-**Host:**
-1. Build the song list in `index.html` as usual.
-2. Click **★ Party** → **Export template**. Downloads a single `party_template.json` — share with participants.
-
-**Each participant:**
-1. Load `party_template.json` via **Load ranking** — enter your name and pick a profile picture.
-2. Score each song 1–10 using the star rating. Use **Play** to listen via EMQ.
-3. Click **↓ Export scores** → send `scores_Name.json` to the host.
-
-**Host renders:**
+## Useful `render_video.py` Options
 ```bash
-python render_video.py party_template.json --scores alice.json bob.json charlie.json
+# Custom output filename and quality
+python render_video.py playlist.json --out my_ranking.mp4 --crf 18 --preset slow
+
+# Force re-render already-processed clips
+python render_video.py playlist.json --force-render
+
+# See all options
+python render_video.py --help
 ```
 
-Scores are averaged. Video plays worst (#N) to best (#1). Right panel shows participant avatars with scores and the average per song.
+---
 
-## `render_video.py` options
-
-`--out`, `--scores`, `--transition`, `--fps`, `--width`, `--height`, `--crf`, `--preset`, `--font`, `--font-jp`, `--work-dir`, `--keep-clips`, `--force-render`, `--cookies`, `--token`, `--no-download`, `-v` / `--verbose`.
-
-Japanese text requires a CJK-capable font (`--font-jp` or install Noto CJK). Output is H.264 + AAC MP4.
+## Files Explained
+| File | Purpose |
+|------|---------|
+| `index.html` | Browser app to build rankings |
+| `db.json` | Song database (from build_db.py) |
+| `build_db.py` | Creates db.json (auto-downloads dump) |
+| `render_video.py` | Renders the final video |
+| `cookies.json` | Your EMQ session cookies (for downloading media) |
 
 ---
 
