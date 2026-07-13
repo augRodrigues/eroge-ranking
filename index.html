@@ -189,8 +189,10 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
   color:#a48ef8;width:28px;text-align:center;line-height:1}
 .cscore-range{flex:1;accent-color:#a48ef8;cursor:pointer}
 .cscore-stars{display:flex;gap:3px;margin-top:2px}
-.cstar{font-size:18px;cursor:pointer;color:var(--mu2);transition:color .1s;line-height:1}
+.cstar{font-size:18px;cursor:pointer;color:var(--mu2);transition:color .1s;line-height:1;position:relative}
 .cstar.on{color:#e8c547}
+.cstar.half{color:#e8c54780}
+.cstar:hover{color:#e8c54780}
 .cplay{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;
   background:var(--sf2);border:1px solid var(--bd);border-radius:5px;
   font-size:11px;font-weight:700;color:var(--grn);cursor:pointer;
@@ -217,6 +219,24 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
 .pm-ok{padding:8px 18px;border-radius:var(--r);font-size:13px;font-weight:700;
   background:#a48ef8;color:#0d0d10;cursor:pointer}
 .pm-ok:hover{filter:brightness(1.08)}
+
+/* ── PARTY SELECTION MODAL ── */
+#psbg{position:fixed;inset:0;background:rgba(0,0,0,.82);backdrop-filter:blur(8px);
+  z-index:600;display:none;align-items:center;justify-content:center;padding:20px}
+#psbg.open{display:flex}
+.ps{background:var(--sf2);border:1px solid var(--bd);border-radius:var(--r2);
+  padding:28px;width:100%;max-width:460px}
+.ps h2{font-family:var(--serif);font-size:20px;font-weight:700;margin-bottom:20px}
+.ps-options{display:flex;flex-direction:column;gap:12px}
+.ps-btn{display:flex;flex-direction:column;align-items:flex-start;padding:14px 16px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);
+  cursor:pointer;transition:all .15s;text-align:left}
+.ps-btn:hover{border-color:var(--ac);background:var(--sf2)}
+.ps-btn-title{font-size:14px;font-weight:700;color:var(--tx);margin-bottom:4px}
+.ps-btn-desc{font-size:12px;color:var(--mu)}
+.ps-solo:hover{border-color:#a48ef8}
+.ps-export:hover{border-color:#3ecfac}
+.ps-cancel:hover{border-color:var(--mu)}
 
 /* ── EXPORT MODAL ── */
 #xmbg{position:fixed;inset:0;background:rgba(0,0,0,.82);backdrop-filter:blur(8px);
@@ -352,6 +372,27 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
     <button class="btn bg sm" id="bparty-export" style="display:none;color:#a48ef8;border-color:rgba(164,142,248,.4)">&#8659; Export scores</button>
     <button class="btn ba sm" id="bexport">&#8659; Export playlist</button>
   </div>
+</div>
+
+<!-- PARTY MODE SELECTION MODAL -->
+<div id="psbg">
+<div class="ps">
+  <h2>Party Mode</h2>
+  <div class="ps-options">
+    <button class="ps-btn ps-solo" id="ps-solo">
+      <div class="ps-btn-title">Solo scoring</div>
+      <div class="ps-btn-desc">Score songs yourself</div>
+    </button>
+    <button class="ps-btn ps-export" id="ps-export">
+      <div class="ps-btn-title">Export template</div>
+      <div class="ps-btn-desc">Share with participants</div>
+    </button>
+    <button class="ps-btn ps-cancel" id="ps-cancel">
+      <div class="ps-btn-title">Cancel</div>
+      <div class="ps-btn-desc">Do not begin party mode</div>
+    </button>
+  </div>
+</div>
 </div>
 
 <!-- PARTY NAME MODAL -->
@@ -624,14 +665,18 @@ function render(){
     const links = s.links || [];
     const hasLinks = links.length > 0;
 
-    // Score stars HTML
+    // Score stars HTML (half-star support)
     const starsHtml=partyMode?
       '<div class="cscore">'
         +'<span class="cscore-lbl">Score</span>'
         +'<div class="cscore-stars" data-sid="'+sid+'">'
-          +[1,2,3,4,5,6,7,8,9,10].map(v=>'<span class="cstar'+(v<=score?' on':'')+'" data-v="'+v+'">★</span>').join('')
+          +[1,2,3,4,5,6,7,8,9,10].map(v=>{
+            const isFull=v<=score;
+            const isHalf=!isFull && v-0.5<=score;
+            return '<span class="cstar'+(isFull?' on':'')+(isHalf?' half':'')+'" data-v="'+v+'">★</span>';
+          }).join('')
         +'</div>'
-        +'<span class="cscore-val" id="sv-'+sid+'">'+(score||'–')+'</span>'
+        +'<span class="cscore-val" id="sv-'+sid+'">'+(score?score.toFixed(1):'–')+'</span>'
       +'</div>'
       :'';
 
@@ -710,16 +755,21 @@ function render(){
     list._ev=true;
     list.addEventListener('click',e=>{
       if(partyMode){
-        // Star click
+        // Star click (half-star support)
         const star=e.target.closest('.cstar');
         if(star){
           const sid=star.closest('.cscore-stars').dataset.sid;
           const v=+star.dataset.v;
-          partyScores.set(sid,v);
+          // Detect click position for half-star
+          const rect=star.getBoundingClientRect();
+          const clickX=e.clientX-rect.left;
+          const isHalf=clickX>rect.width/2;
+          const finalScore=isHalf?v+0.5:v;
+          partyScores.set(sid,finalScore);
           // update stars in place
-          star.closest('.cscore-stars').querySelectorAll('.cstar').forEach(s=>s.classList.toggle('on',+s.dataset.v<=v));
+          star.closest('.cscore-stars').querySelectorAll('.cstar').forEach(s=>s.classList.toggle('on',+s.dataset.v<=finalScore));
           const valEl=document.getElementById('sv-'+sid);
-          if(valEl)valEl.textContent=v;
+          if(valEl)valEl.textContent=finalScore.toFixed(1);
           star.closest('.card').classList.add('scored');
         }
         return;
@@ -980,12 +1030,16 @@ function exportScores(){
 $('hparty').addEventListener('click',()=>{
   if(partyMode){exitParty();return;}
   if(!ranking.length){toast('Add songs first, then export a party template',true);return;}
-  const choice=confirm('Export a party_template.json for participants?\n\nOK = Export template\nCancel = Enter party scoring mode yourself');
-  if(choice)exportPartyTemplate();
-  else{$('pmbg').classList.add('open');$('pm-name').value='';
-    $('pm-avatar-preview').innerHTML='&#9786;';delete $('pm-avatar-preview').dataset.b64;
-    $('pm-avatar-name').textContent='No image';$('pm-avatar').value='';
-    setTimeout(()=>$('pm-name').focus(),50);}
+  $('psbg').classList.add('open');
+});
+$('ps-cancel').addEventListener('click',()=>$('psbg').classList.remove('open'));
+$('ps-solo').addEventListener('click',()=>{
+  $('psbg').classList.remove('open');
+  enterParty('Solo','');
+});
+$('ps-export').addEventListener('click',()=>{
+  $('psbg').classList.remove('open');
+  exportPartyTemplate();
 });
 $('pbanner-close').addEventListener('click',exitParty);
 $('bparty-export').addEventListener('click',exportScores);

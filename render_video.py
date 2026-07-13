@@ -2160,6 +2160,8 @@ def main():
                     help="Playlist JSON file (default: playlist.json if exists)")
     ap.add_argument("--scores", nargs="+", metavar="scores.json",
                     help="Party scores files to merge (e.g. --scores alice.json bob.json)")
+    ap.add_argument("--solo", action="store_true",
+                    help="Render as solo mode (standard overlay even if party data exists)")
     ap.add_argument("--out", default="ranking.mp4",
                     help="Output video file (default: ranking.mp4)")
     ap.add_argument("--transition", default=None, type=float,
@@ -2338,7 +2340,7 @@ def main():
         logs = [f"\n  [{i+1:>3}/{len(entries)}] #{rank} — {title}"]
         clip_path = str(clips_dir / f"{rank:04d}.mp4")
         
-        is_party_clip = bool(entry.get("party_participants_data"))
+        is_party_clip = bool(entry.get("party_participants_data")) and not args.solo
         if skip_existing and not is_party_clip and os.path.isfile(clip_path) and os.path.getsize(clip_path) > 4096:
             logs.append("    ✓ clip exists, skipping (use --force-render to re-render)")
             return (i, clip_path, float(entry.get("duration", 30)), True, logs, "skipped")
@@ -2376,7 +2378,7 @@ def main():
         if media_path:
             if media_kind(media_path) == "video":
                 is_video = file_has_video(media_path)
-        party_pd = entry.get("party_participants_data") or None
+        party_pd = None if args.solo else (entry.get("party_participants_data") or None)
         hero_rgb = sample_dominant_color(cover_img)
 
         def render_ov(hole, _pd=party_pd):
