@@ -482,8 +482,9 @@ let tokenIndex = new Map(); // Map<token string, Set<string> song ids>
 let ranking=[];
 let pjson=null;
 let partyMode=false,partyName='',partyAvatar='';
-// scores: Map<song_id_string, 1-10>
+// scores: Map<song_id_string, 1-10> - deprecated, now using entry.partyScore
 let partyScores=new Map();
+let sortDebounceTimer=null;
 const $=id=>document.getElementById(id);
 const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 function toast(m,e=false){const el=document.createElement('div');el.className='toast'+(e?' err':'');el.textContent=m;document.body.appendChild(el);setTimeout(()=>el.remove(),2500);}
@@ -596,11 +597,11 @@ function addSong(s){
 }
 function del(i){ranking.splice(i,1);save();render();}
 function mv(f,t){if(t<0||t>=ranking.length)return;const[x]=ranking.splice(f,1);ranking.splice(t,0,x);save();render();}
-function save(){try{sessionStorage.setItem('emq-r',JSON.stringify(ranking.map(r=>({id:r.s.id,d:r.dur,s:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex}))));}catch{}}
+function save(){try{sessionStorage.setItem('emq-r',JSON.stringify(ranking.map(r=>({id:r.s.id,d:r.dur,s:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex,partyScore:r.partyScore||0}))));}catch{}}
 function restore(){
   try{
     const sv=JSON.parse(sessionStorage.getItem('emq-r')||'[]');ranking=[];
-    for(const x of sv){const s=idx?.get(String(x.id));if(s)ranking.push({s,dur:x.d||30,st:x.s||0,lp:x.lp||'',selectedLinkIndex:x.selectedLinkIndex||0});}
+    for(const x of sv){const s=idx?.get(String(x.id));if(s)ranking.push({s,dur:x.d||30,st:x.s||0,lp:x.lp||'',selectedLinkIndex:x.selectedLinkIndex||0,partyScore:x.partyScore||0});}
   }catch{}
 }
 function saveFile(){
@@ -637,6 +638,34 @@ function formatTime(seconds) {
   return `${m}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Render cards with FLIP animation
+function renderWithFlip(){
+  if(!partyMode){render();return;}
+  const list=$('rl');
+  const oldCards=Array.from(list.children);
+  const oldMap=new Map(oldCards.map(c=>[c.dataset.sid,c]));
+  render();
+  const newCards=Array.from(list.children);
+  const newMap=new Map(newCards.map(c=>[c.dataset.sid,c]));
+  newCards.forEach(card=>{
+    const sid=card.dataset.sid;
+    const oldCard=oldMap.get(sid);
+    if(oldCard){
+      const first=oldCard.getBoundingClientRect();
+      const last=card.getBoundingClientRect();
+      const invert={x:first.left-last.left,y:first.top-last.top};
+      if(invert.x||invert.y){
+        card.style.transform=`translate(${invert.x}px,${invert.y}px)`;
+        card.style.transition='none';
+        requestAnimationFrame(()=>{
+          card.style.transform='';
+          card.style.transition='transform 0.3s ease-out';
+        });
+      }
+    }
+  });
+}
+
 // Render cards
 function render(){
   const list=$('rl'),n=ranking.length;
@@ -650,15 +679,29 @@ function render(){
   $('bsave').style.display=partyMode?'none':'';
   $('pbanner').classList.toggle('show',partyMode);
   if(!n){list.innerHTML='<div class="empty"><span class="ei">&#9836;</span>'+(partyMode?'No songs in this party template.':'Search for songs or paste an EMQ URL to start.')+'</div>';return;}
+
+  // In party mode, sort by score descending, then by original index (manual order) as tie-break
+  let displayOrder = ranking.map((e, i) => ({entry: e, originalIndex: i}));
+  if(partyMode){
+    displayOrder.sort((a, b) => {
+      const scoreA = a.entry.partyScore || 0;
+      const scoreB = b.entry.partyScore || 0;
+      if(scoreB !== scoreA) return scoreB - scoreA; // Higher scores first
+      return a.originalIndex - b.originalIndex; // Tie-break by original order
+    });
+  }
+
   let ds=null;list.innerHTML='';
-  ranking.forEach((entry,i)=>{
-    const{s,dur,st,lp,selectedLinkIndex}=entry,tp=s.st||0,rk=i+1;
+  displayOrder.forEach(({entry, originalIndex}, displayIndex)=>{
+    const{s,dur,st,lp,selectedLinkIndex}=entry,tp=s.st||0,rk=displayIndex+1;
     const vc=(s.ar||[]).filter(a=>a.r===1).map(a=>a.n).join(', ');
     const co=(s.ar||[]).filter(a=>a.r===2).map(a=>a.n).join(', ');
     const sid=String(s.id);
-    const score=partyScores.get(sid)||0;
+    const score=entry.partyScore||0;
     const c=document.createElement('div');
     c.className='card'+(partyMode?' party'+(score?' scored':''):'');
+    c.dataset.sid=sid;
+    c.dataset.originalIndex=originalIndex;
     if(!partyMode){c.draggable=true;}
 
     // Get current selected link
@@ -713,21 +756,21 @@ function render(){
         +(partyMode?''
           :'<div class="car">'+[vc&&'Vocals: '+vc,co&&'Music: '+co].filter(Boolean).join(' · ')+'</div>'
           +'<div class="ccl"><span class="cll">Clip</span>'
-            +'<input class="cin" type="text" value="'+formatTime(dur)+'" data-f="d" data-i="'+i+'"> s'
+            +'<input class="cin" type="text" value="'+formatTime(dur)+'" data-f="d" data-i="'+originalIndex+'"> s'
             +'<span class="csep">·</span><span class="cll">Start</span>'
-            +'<input class="cin" type="text" value="'+formatTime(st)+'" data-f="s" data-i="'+i+'"> s'
+            +'<input class="cin" type="text" value="'+formatTime(st)+'" data-f="s" data-i="'+originalIndex+'"> s'
           +'</div>'
           +'<div class="ccl" style="margin-top:6px;"><span class="cll">Link</span>'
-            +(hasLinks 
-              ? `<select class="cin" style="min-width:200px;" data-f="link" data-i="${i}">
+            +(hasLinks
+              ? `<select class="cin" style="min-width:200px;" data-f="link" data-i="${originalIndex}">
                   ${linkOptionsHtml}
-                </select>` 
+                </select>`
               : '<span style="color:var(--mu2);">No links available</span>')
           +'</div>'
           +'<div class="clf"><span class="clfl">Local file <span style="color:var(--mu2);font-weight:400">(optional)</span>:</span><div class="clfp">'
-            +'<label class="clfbtn">Browse<input type="file" accept="video/*,audio/*,.webm,.mkv,.avi,.mov,.opus,.flac" data-f="file" data-i="'+i+'"></label>'
+            +'<label class="clfbtn">Browse<input type="file" accept="video/*,audio/*,.webm,.mkv,.avi,.mov,.opus,.flac" data-f="file" data-i="'+originalIndex+'"></label>'
             +'<span class="clfn" title="'+esc(lp||'')+'">'+(lp?esc(lp):'<span style="color:var(--mu2)">No file selected</span>')+'</span>'
-            +(lp?'<span class="clfx" data-clr="'+i+'">Clear</span>':'')
+            +(lp?'<span class="clfx" data-clr="'+originalIndex+'">Clear</span>':'')
           +'</div></div>'
           +'<div class="cm" style="margin-top:3px">'
             +(playUrl?'<span class="aok">EMQ URL available</span>':'<span class="amiss">No EMQ URL</span>')
@@ -737,16 +780,16 @@ function render(){
       +'</div>'
       +(partyMode?''
         :'<div class="cc"><div class="cbtns">'
-          +'<button class="ib del" data-rm="'+i+'">×</button>'
+          +'<button class="ib del" data-rm="'+originalIndex+'">×</button>'
         +'</div></div>'
       );
 
     if(!partyMode){
-      c.addEventListener('dragstart',e=>{ds=i;e.dataTransfer.effectAllowed='move';setTimeout(()=>c.classList.add('dsrc'),0);});
+      c.addEventListener('dragstart',e=>{ds=originalIndex;e.dataTransfer.effectAllowed='move';setTimeout(()=>c.classList.add('dsrc'),0);});
       c.addEventListener('dragend',()=>c.classList.remove('dsrc'));
       c.addEventListener('dragover',e=>{e.preventDefault();c.classList.add('dover');});
       c.addEventListener('dragleave',()=>c.classList.remove('dover'));
-      c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('dover');if(ds!==null&&ds!==i){mv(ds,i);ds=null;}});
+      c.addEventListener('drop',e=>{e.preventDefault();c.classList.remove('dover');if(ds!==null&&ds!==originalIndex){mv(ds,originalIndex);ds=null;}});
     }
     list.appendChild(c);
   });
@@ -765,12 +808,18 @@ function render(){
           const clickX=e.clientX-rect.left;
           const isHalf=clickX>rect.width/2;
           const finalScore=isHalf?v+0.5:v;
-          partyScores.set(sid,finalScore);
+          // Update persistent score on entry
+          const entry=ranking.find(r=>String(r.s.id)===sid);
+          if(entry)entry.partyScore=finalScore;
+          save();
           // update stars in place
           star.closest('.cscore-stars').querySelectorAll('.cstar').forEach(s=>s.classList.toggle('on',+s.dataset.v<=finalScore));
           const valEl=document.getElementById('sv-'+sid);
           if(valEl)valEl.textContent=finalScore.toFixed(1);
           star.closest('.card').classList.add('scored');
+          // Debounced re-sort
+          clearTimeout(sortDebounceTimer);
+          sortDebounceTimer=setTimeout(()=>renderWithFlip(),600);
         }
         return;
       }
@@ -997,7 +1046,17 @@ function enterParty(name,avatar){
   render();
 }
 function exitParty(){
-  partyMode=false;partyName='';partyAvatar='';partyScores.clear();
+  // Sync score-sorted order into manual order before exiting
+  const sortedOrder = ranking.map((e, i) => ({entry: e, originalIndex: i}));
+  sortedOrder.sort((a, b) => {
+    const scoreA = a.entry.partyScore || 0;
+    const scoreB = b.entry.partyScore || 0;
+    if(scoreB !== scoreA) return scoreB - scoreA;
+    return a.originalIndex - b.originalIndex;
+  });
+  ranking = sortedOrder.map(item => item.entry);
+  save();
+  partyMode=false;partyName='';partyAvatar='';
   $('rl')._ev=false;
   render();
 }
@@ -1018,11 +1077,11 @@ function exportPartyTemplate(){
 }
 function exportScores(){
   if(!partyMode){toast('Not in party mode',true);return;}
-  const unscored=ranking.filter(r=>!partyScores.get(String(r.s.id)));
+  const unscored=ranking.filter(r=>!r.partyScore);
   if(unscored.length&&!confirm(unscored.length+' song(s) not scored yet. Export anyway?'))return;
   const out={type:'party_scores',version:1,participant:partyName,avatar:partyAvatar||null,
     exported_at:new Date().toISOString(),
-    scores:ranking.map(r=>({id:String(r.s.id),title:r.s.t||'',score:partyScores.get(String(r.s.id))||0}))};
+    scores:ranking.map(r=>({id:String(r.s.id),title:r.s.t||'',score:r.partyScore||0}))};
   const bl=new Blob([JSON.stringify(out,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='scores_'+partyName.replace(/\s+/g,'_')+'.json';a.click();URL.revokeObjectURL(a.href);
   toast('Scores exported');
@@ -1079,7 +1138,7 @@ function loadFile(txt){
         }
         return{s,dur:30,st:0,lp:'',selectedLinkIndex};}).filter(Boolean);
       if(miss)toast(miss+' song(s) not in DB',true);
-      partyScores.clear();save();
+      save();
       $('pmbg').classList.add('open');$('pm-name').value='';
       $('pm-avatar-preview').innerHTML='&#9786;';delete $('pm-avatar-preview').dataset.b64;
       $('pm-avatar-name').textContent='No image';$('pm-avatar').value='';
@@ -1088,7 +1147,7 @@ function loadFile(txt){
     }
     const it=d.ranking||d;let miss=0;
     ranking=it.map(x=>{const s=idx?.get(String(x.id||x.song_id));if(!s){miss++;return null;}
-      return{s,dur:x.duration||x.dur||x.d||30,st:x.startTime||x.start||x.st||x.s||0,lp:x.localPath||x.local_file||x.lp||'',selectedLinkIndex:x.selectedLinkIndex||0};}).filter(Boolean);
+      return{s,dur:x.duration||x.dur||x.d||30,st:x.startTime||x.start||x.st||x.s||0,lp:x.localPath||x.local_file||x.lp||'',selectedLinkIndex:x.selectedLinkIndex||0,partyScore:x.partyScore||0};}).filter(Boolean);
     if(miss)toast(miss+' song(s) not found',true);
     save();render();
   }catch{toast('Invalid JSON',true);}
