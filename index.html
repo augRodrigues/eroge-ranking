@@ -606,7 +606,19 @@ function restore(){
   }catch{}
 }
 function saveFile(){
-  const bl=new Blob([JSON.stringify({ranking:ranking.map((r,i)=>({rank:i+1,id:r.s.id,t:r.s.t,gt:r.s.gt,st:r.s.st,dur:r.dur,start:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex}))},null,2)],{type:'application/json'});
+  // If in party mode, sync score-sorted order before saving
+  let saveRanking = ranking;
+  if(partyMode){
+    const sortedOrder = ranking.map((e, i) => ({entry: e, originalIndex: i}));
+    sortedOrder.sort((a, b) => {
+      const scoreA = a.entry.partyScore || 0;
+      const scoreB = b.entry.partyScore || 0;
+      if(scoreB !== scoreA) return scoreB - scoreA;
+      return a.originalIndex - b.originalIndex;
+    });
+    saveRanking = sortedOrder.map(item => item.entry);
+  }
+  const bl=new Blob([JSON.stringify({ranking:saveRanking.map((r,i)=>({rank:i+1,id:r.s.id,t:r.s.t,gt:r.s.gt,st:r.s.st,dur:r.dur,start:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex,partyScore:r.partyScore||0}))},null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(bl);a.download='emq-ranking.json';a.click();URL.revokeObjectURL(a.href);
 }
 
