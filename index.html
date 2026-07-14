@@ -189,9 +189,10 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
   color:#a48ef8;width:28px;text-align:center;line-height:1}
 .cscore-range{flex:1;accent-color:#a48ef8;cursor:pointer}
 .cscore-stars{display:flex;gap:3px;margin-top:2px}
-.cstar{font-size:18px;cursor:pointer;color:var(--mu2);transition:color .1s;line-height:1;position:relative}
+.cstar{font-size:18px;cursor:pointer;color:var(--mu2);transition:color .1s;line-height:1;position:relative;display:inline-block}
 .cstar.on{color:#e8c547}
-.cstar.half{color:#e8c54780}
+.cstar.half{position:relative;color:var(--mu2)}
+.cstar.half::before{content:'★';position:absolute;left:0;top:0;color:#e8c547;clip-path:inset(0 50% 0 0)}
 .cstar:hover{color:#e8c54780}
 .cplay{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;
   background:var(--sf2);border:1px solid var(--bd);border-radius:5px;
@@ -753,9 +754,9 @@ function render(){
           +'<span class="cg">'+esc(s.gt||'Unknown')+'</span>'
           +(playHtml?playHtml:'')
         +'</div>'
+        +'<div class="car">'+[vc&&'Vocals: '+vc,co&&'Music: '+co].filter(Boolean).join(' · ')+'</div>'
         +(partyMode?''
-          :'<div class="car">'+[vc&&'Vocals: '+vc,co&&'Music: '+co].filter(Boolean).join(' · ')+'</div>'
-          +'<div class="ccl"><span class="cll">Clip</span>'
+          :'<div class="ccl"><span class="cll">Clip</span>'
             +'<input class="cin" type="text" value="'+formatTime(dur)+'" data-f="d" data-i="'+originalIndex+'"> s'
             +'<span class="csep">·</span><span class="cll">Start</span>'
             +'<input class="cin" type="text" value="'+formatTime(st)+'" data-f="s" data-i="'+originalIndex+'"> s'
@@ -807,13 +808,20 @@ function render(){
           const rect=star.getBoundingClientRect();
           const clickX=e.clientX-rect.left;
           const isHalf=clickX>rect.width/2;
-          const finalScore=isHalf?v+0.5:v;
+          // Right half = full star, Left half = half star (v-0.5)
+          const finalScore=isHalf?v:v-0.5;
+          if(finalScore<0.5)return; // Minimum 0.5
           // Update persistent score on entry
           const entry=ranking.find(r=>String(r.s.id)===sid);
           if(entry)entry.partyScore=finalScore;
           save();
           // update stars in place
-          star.closest('.cscore-stars').querySelectorAll('.cstar').forEach(s=>s.classList.toggle('on',+s.dataset.v<=finalScore));
+          star.closest('.cscore-stars').querySelectorAll('.cstar').forEach(s=>{
+            s.classList.remove('on','half');
+            const sv=+s.dataset.v;
+            if(sv<=finalScore)s.classList.add('on');
+            if(sv-0.5===finalScore)s.classList.add('half');
+          });
           const valEl=document.getElementById('sv-'+sid);
           if(valEl)valEl.textContent=finalScore.toFixed(1);
           star.closest('.card').classList.add('scored');
@@ -823,9 +831,59 @@ function render(){
         }
         return;
       }
-      const rm=e.target.closest('[data-rm]'),clr=e.target.closest('[data-clr]');
-      if(rm)del(+rm.dataset.rm);
-      if(clr){const ix=+clr.dataset.clr;ranking[ix].lp='';save();render();}
+    });
+    list.addEventListener('mouseover',e=>{
+      if(partyMode){
+        const star=e.target.closest('.cstar');
+        if(star){
+          const sid=star.closest('.cscore-stars').dataset.sid;
+          const v=+star.dataset.v;
+          const rect=star.getBoundingClientRect();
+          const hoverX=e.clientX-rect.left;
+          const isHalf=hoverX>rect.width/2;
+          const previewScore=isHalf?v:v-0.5;
+          if(previewScore<0.5)return;
+          const entry=ranking.find(r=>String(r.s.id)===sid);
+          const actualScore=entry?entry.partyScore||0:0;
+          star.closest('.cscore-stars').querySelectorAll('.cstar').forEach(s=>{
+            const sv=+s.dataset.v;
+            // Keep actual score visible, add preview on top
+            s.classList.remove('on','half');
+            if(sv<=actualScore)s.classList.add('on');
+            if(sv-0.5===actualScore)s.classList.add('half');
+            // Add preview highlight for stars that would be added
+            if(sv>actualScore&&sv<=previewScore)s.classList.add('on');
+            if(sv-0.5===previewScore&&sv-0.5>actualScore)s.classList.add('half');
+          });
+          const valEl=document.getElementById('sv-'+sid);
+          if(valEl)valEl.textContent=previewScore.toFixed(1);
+        }
+      }
+    });
+    list.addEventListener('mouseout',e=>{
+      if(partyMode){
+        const starsContainer=e.target.closest('.cscore-stars');
+        if(starsContainer){
+          const sid=starsContainer.dataset.sid;
+          const entry=ranking.find(r=>String(r.s.id)===sid);
+          const actualScore=entry?entry.partyScore||0:0;
+          starsContainer.querySelectorAll('.cstar').forEach(s=>{
+            s.classList.remove('on','half');
+            const sv=+s.dataset.v;
+            if(sv<=actualScore)s.classList.add('on');
+            if(sv-0.5===actualScore)s.classList.add('half');
+          });
+          const valEl=document.getElementById('sv-'+sid);
+          if(valEl)valEl.textContent=actualScore?actualScore.toFixed(1):'–';
+        }
+      }
+    });
+    list.addEventListener('click',e=>{
+      if(!partyMode){
+        const rm=e.target.closest('[data-rm]'),clr=e.target.closest('[data-clr]');
+        if(rm)del(+rm.dataset.rm);
+        if(clr){const ix=+clr.dataset.clr;ranking[ix].lp='';save();render();}
+      }
     });
     list.addEventListener('change',e=>{
       if(partyMode)return;
