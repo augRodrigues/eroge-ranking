@@ -248,7 +248,11 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
   display:flex;flex-direction:column}
 .xm h2{font-family:var(--serif);font-size:22px;font-weight:700;margin-bottom:4px;flex-shrink:0}
 .xsub{font-size:13px;color:var(--mu);margin-bottom:20px;flex-shrink:0}
-.xgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px;flex-shrink:0}
+.xtype{display:flex;flex-direction:column;gap:10px;margin-bottom:20px;flex-shrink:0}
+.xr{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--sf);
+  border:1px solid var(--bd);border-radius:var(--r);cursor:pointer;font-size:13px;color:var(--tx)}
+.xr:hover{border-color:var(--ac)}
+.xr input{margin:0}
 .xf label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;
   color:var(--mu);margin-bottom:5px;font-weight:700}
 .xf select,.xf input[type=number]{width:100%;padding:7px 10px;background:var(--sf);
@@ -327,10 +331,9 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
   <header>
     <div class="hlogo">&#9834; EMQ Ranking</div>
     <span class="hinfo" id="hinfo"></span>
-    <button class="btn bg sm" id="hload">Load ranking</button>
-    <button class="btn bg sm" id="hsave">Save ranking</button>
+    <button class="btn bg sm" id="himport">&#8657; Import</button>
     <button class="btn bg sm" id="hparty" style="color:#a48ef8;border-color:rgba(164,142,248,.4)">&#9733; Party</button>
-    <button class="btn ba sm" id="hexport">&#8659; Export playlist</button>
+    <button class="btn ba sm" id="hexport">&#8659; Export</button>
     <input type="file" id="lrf" accept=".json" style="display:none">
   </header>
   <main>
@@ -369,9 +372,6 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
       <strong id="bcnt" style="color:var(--tx)">0</strong> songs &middot;
       <span id="bdur" style="color:var(--mu)"></span>
     </span>
-    <button class="btn bg sm" id="bsave">Save</button>
-    <button class="btn bg sm" id="bparty-export" style="display:none;color:#a48ef8;border-color:rgba(164,142,248,.4)">&#8659; Export scores</button>
-    <button class="btn ba sm" id="bexport">&#8659; Export playlist</button>
   </div>
 </div>
 
@@ -381,12 +381,8 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
   <h2>Party Mode</h2>
   <div class="ps-options">
     <button class="ps-btn ps-solo" id="ps-solo">
-      <div class="ps-btn-title">Solo scoring</div>
+      <div class="ps-btn-title">Enter party mode</div>
       <div class="ps-btn-desc">Score songs yourself</div>
-    </button>
-    <button class="ps-btn ps-export" id="ps-export">
-      <div class="ps-btn-title">Export template</div>
-      <div class="ps-btn-desc">Share with participants</div>
     </button>
     <button class="ps-btn ps-cancel" id="ps-cancel">
       <div class="ps-btn-title">Cancel</div>
@@ -419,8 +415,13 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
 <!-- EXPORT MODAL -->
 <div id="xmbg">
 <div class="xm">
-  <h2 id="xmtitle">Export Playlist</h2>
-  <div class="xsub" id="xmsub">Resolves VNDB cover URLs, then downloads playlist.json</div>
+  <h2 id="xmtitle">Export</h2>
+  <div class="xsub" id="xmsub">Select export type</div>
+  <div class="xtype" id="xtype">
+    <label class="xr"><input type="radio" name="xtype" value="playlist" checked> Export playlist (with VNDB covers)</label>
+    <label class="xr" id="xt-scores" style="display:none"><input type="radio" name="xtype" value="scores"> Export scores (your ratings)</label>
+    <label class="xr" id="xt-template" style="display:none"><input type="radio" name="xtype" value="template"> Export party template (share with participants)</label>
+  </div>
   <div class="xgrid" id="xsettings">
     <div class="xf">
       <label>Resolution</label>
@@ -465,9 +466,9 @@ main{flex:1;display:flex;flex-direction:column;max-width:840px;
     <em>Only if you chose local files:</em> put your media files next to <code>render_video.py</code> or <code>playlist.json</code> before rendering. Filenames must match what you picked in the app.
   </div>
   <div class="xbtns">
-    <button class="xdl" id="xdl">&#8659; Download playlist.json</button>
+    <button class="xdl" id="xdl" style="display:none">&#8659; Download</button>
     <button class="xcanc" id="xcanc">Cancel</button>
-    <button class="xgo" id="xgo">Fetch covers &amp; Export</button>
+    <button class="xgo" id="xgo">Export</button>
   </div>
 </div>
 </div>
@@ -526,7 +527,25 @@ async function fetchDB(cb){
     cb(.4,'Parsing…');const j=await r.text();
     cb(.8,'Building search index…');await loadDB(j);
     cb(1,'Ready');return true;
-  }catch{return false;}
+  }catch{
+    // Try fallback for file:// protocol
+    try{
+      cb(.1,'Trying file:// fallback…');
+      const xhr=new XMLHttpRequest();
+      xhr.open('GET','./db.json',true);
+      xhr.responseType='text';
+      return new Promise((resolve)=>{
+        xhr.onload=async()=>{
+          if(xhr.status===0||xhr.status===200){
+            cb(.4,'Parsing…');await loadDB(xhr.responseText);
+            cb(1,'Ready');resolve(true);
+          }else{resolve(false);}
+        };
+        xhr.onerror=()=>resolve(false);
+        xhr.send();
+      });
+    }catch{return false;}
+  }
 }
 async function startup(){
   const sp=(p,l)=>{$('lbar').style.width=Math.round(p*100)+'%';$('llbl').textContent=l;};
@@ -586,7 +605,9 @@ function renderDD(res){
 
 // Ranking
 function addSong(s){
-  if(ranking.some(r=>String(r.s.id)===String(s.id))){toast('Already in ranking');return;}
+  if(!s || !s.id){toast('Invalid song data',true);return;}
+  const existing = ranking.find(r=>String(r.s.id)===String(s.id));
+  if(existing){toast('Already in ranking: '+s.t);return;}
   // Find index of default link (the au one)
   let selectedLinkIndex = 0;
   if(s.links && s.au){
@@ -687,9 +708,6 @@ function render(){
   // party mode UI state
   $('srow').style.display=partyMode?'none':'flex';
   $('gbar').style.display=partyMode?'none':'flex';
-  $('bparty-export').style.display=partyMode?'':'none';
-  $('bexport').style.display=partyMode?'none':'';
-  $('bsave').style.display=partyMode?'none':'';
   $('pbanner').classList.toggle('show',partyMode);
   if(!n){list.innerHTML='<div class="empty"><span class="ei">&#9836;</span>'+(partyMode?'No songs in this party template.':'Search for songs or paste an EMQ URL to start.')+'</div>';return;}
 
@@ -1058,6 +1076,7 @@ async function doExport(){
     pl.type='party_template';
     pl.songs=ranking.map(r=>({id:String(r.s.id),title:r.s.t||'',title_jp:r.s.tj||'',
       game:r.s.gt||'',song_type_id:r.s.st||0,audio_url:r.s.au||null,
+      dur:r.dur,st:r.st,lp:r.lp,selectedLinkIndex:r.selectedLinkIndex,
       artists:(r.s.ar||[]).map(a=>({name:a.n,role_id:a.r}))}));
   }
   pjson=JSON.stringify(pl,null,2);
@@ -1066,6 +1085,7 @@ async function doExport(){
   $('xmtitle').textContent='Playlist Ready';
   $('xinfo').style.display='block';
   $('xdl').classList.add('show');
+  $('xdl').style.display='block';
   $('xcanc').textContent='Close';
 }
 function dlPlaylist(){
@@ -1104,8 +1124,7 @@ document.addEventListener('click',e=>{if(!$('swrap').contains(e.target))sd.class
 
 $('apdur').addEventListener('click',()=>{const d=Math.max(5,parseTime($('gdur').value)||30);$('gdur').value=formatTime(d);ranking.forEach(r=>r.dur=d);save();render();toast('Set all clips to '+d+'s');});
 $('apstart').addEventListener('click',()=>{const s=Math.max(0,parseTime($('gstart').value)||0);$('gstart').value=formatTime(s);ranking.forEach(r=>r.st=s);save();render();toast('Set all start offsets to '+s+'s');});
-$('hsave').addEventListener('click',saveFile);$('bsave').addEventListener('click',saveFile);
-$('hload').addEventListener('click',()=>$('lrf').click());
+$('himport').addEventListener('click',()=>$('lrf').click());
 $('lrf').addEventListener('change',async e=>{if(!e.target.files[0])return;loadFile(await rft(e.target.files[0]));e.target.value='';});
 
 // ── Party mode ──────────────────────────────────────────────────────────────
@@ -1166,12 +1185,8 @@ $('ps-solo').addEventListener('click',()=>{
   $('psbg').classList.remove('open');
   enterParty('Solo','');
 });
-$('ps-export').addEventListener('click',()=>{
-  $('psbg').classList.remove('open');
-  exportPartyTemplate();
-});
 $('pbanner-close').addEventListener('click',exitParty);
-$('bparty-export').addEventListener('click',exportScores);
+$('hexport').addEventListener('click',openExport);
 $('pm-canc').addEventListener('click',()=>$('pmbg').classList.remove('open'));
 $('pm-avatar').addEventListener('change',async e=>{
   const f=e.target.files[0];if(!f)return;
@@ -1200,19 +1215,39 @@ function loadFile(txt){
     const d=JSON.parse(txt);
     if(d.type==='party_template'){
       const list=d.songs||[];let miss=0;
+      ranking=[]; // Clear existing ranking first
       ranking=list.map(x=>{const s=idx?.get(String(x.id));if(!s){miss++;return null;}
         let selectedLinkIndex =0;
-        if(s.links && s.au){
-          selectedLinkIndex = s.links.findIndex(l => l.url === s.au);
+        if(s.links && x.audio_url){
+          selectedLinkIndex = s.links.findIndex(l => l.url === x.audio_url);
           if(selectedLinkIndex === -1) selectedLinkIndex=0;
         }
-        return{s,dur:30,st:0,lp:'',selectedLinkIndex};}).filter(Boolean);
+        // Preserve sample settings from template
+        return{s,dur:x.dur||30,st:x.st||0,lp:x.lp||'',selectedLinkIndex};}).filter(Boolean);
       if(miss)toast(miss+' song(s) not in DB',true);
       save();
       $('pmbg').classList.add('open');$('pm-name').value='';
       $('pm-avatar-preview').innerHTML='&#9786;';delete $('pm-avatar-preview').dataset.b64;
       $('pm-avatar-name').textContent='No image';$('pm-avatar').value='';
       setTimeout(()=>$('pm-name').focus(),50);
+      return;
+    }
+    if(d.type==='party_scores'){
+      if(!partyMode){
+        // Auto-enter party mode with imported scores
+        const name=d.participant||'Imported';
+        const avatar=d.avatar||null;
+        enterParty(name,avatar);
+      }
+      // Merge scores into current ranking
+      const scores=d.scores||[];
+      let merged=0;
+      scores.forEach(sc=>{
+        const r=ranking.find(x=>String(x.s.id)===String(sc.id));
+        if(r){r.partyScore=sc.score;merged++;}
+      });
+      toast(merged+' score(s) imported');
+      save();render();
       return;
     }
     const it=d.ranking||d;let miss=0;
@@ -1227,17 +1262,31 @@ function openExport(){
   if(!ranking.length){toast('Add songs to the ranking first',true);return;}
   pjson=null;
   delete $('xdl').dataset.party;
-  $('xdl').textContent='⬇ Download playlist.json';
+  $('xdl').classList.remove('show');
   $('xsettings').style.display='grid';$('xgo').style.display='';$('xgo').disabled=false;
   $('xcanc').textContent='Cancel';$('xprog').style.display='none';$('xbar').style.width='0';
   $('xsl').style.display='none';$('xsl').innerHTML='';
-  $('xinfo').style.display='none';$('xdl').classList.remove('show');
-  $('xmtitle').textContent='Export Playlist';
-  $('xmsub').textContent=ranking.length+' songs · '+fmtd(tsec())+' total · resolves VNDB covers then downloads playlist.json';
+  $('xinfo').style.display='none';
+
+  // Reset export type based on current mode
+  const typeRadios=document.querySelectorAll('input[name="xtype"]');
+  typeRadios.forEach(r=>r.checked=false);
+  if(partyMode){
+    $('xt-scores').style.display='';
+    $('xt-template').style.display='';
+    document.querySelector('input[name="xtype"][value="scores"]').checked=true;
+    $('xmtitle').textContent='Export';
+    $('xmsub').textContent='Select export type';
+    $('xsettings').style.display='none';
+  }else{
+    $('xt-scores').style.display='none';
+    $('xt-template').style.display='none';
+    document.querySelector('input[name="xtype"][value="playlist"]').checked=true;
+    $('xmtitle').textContent='Export Playlist';
+    $('xmsub').textContent=ranking.length+' songs · '+fmtd(tsec())+' total · resolves VNDB covers then downloads playlist.json';
+  }
   $('xmbg').classList.add('open');
 }
-$('hexport').addEventListener('click',openExport);
-$('bexport').addEventListener('click',openExport);
 $('xcanc').addEventListener('click',()=>{
   $('xmbg').classList.remove('open');
   // reset party flag and button label
@@ -1246,7 +1295,36 @@ $('xcanc').addEventListener('click',()=>{
 });
 $('xgo').addEventListener('click',()=>{
   $('xgo').disabled=true;
-  doExport().catch(e=>{toast('Export error: '+e.message,true);console.error(e);$('xgo').disabled=false;});
+  const selectedType=document.querySelector('input[name="xtype"]:checked').value;
+  if(selectedType==='scores'){
+    exportScores();
+    $('xgo').disabled=false;
+  }else if(selectedType==='template'){
+    // Set party flag and run full export
+    $('xdl').dataset.party='1';
+    doExport().catch(e=>{toast('Export error: '+e.message,true);console.error(e);$('xgo').disabled=false;});
+  }else{
+    doExport().catch(e=>{toast('Export error: '+e.message,true);console.error(e);$('xgo').disabled=false;});
+  }
+});
+// Export type change handler
+document.querySelectorAll('input[name="xtype"]').forEach(radio=>{
+  radio.addEventListener('change',()=>{
+    const selected=radio.value;
+    if(selected==='playlist'){
+      $('xsettings').style.display='grid';
+      $('xmtitle').textContent='Export Playlist';
+      $('xmsub').textContent=ranking.length+' songs · '+fmtd(tsec())+' total · resolves VNDB covers then downloads playlist.json';
+    }else if(selected==='scores'){
+      $('xsettings').style.display='none';
+      $('xmtitle').textContent='Export Scores';
+      $('xmsub').textContent='Export your ratings as scores.json';
+    }else if(selected==='template'){
+      $('xsettings').style.display='grid';
+      $('xmtitle').textContent='Export Party Template';
+      $('xmsub').textContent=ranking.length+' songs · resolves VNDB covers then downloads party_template.json';
+    }
+  });
 });
 $('xdl').addEventListener('click',dlPlaylist);
 
